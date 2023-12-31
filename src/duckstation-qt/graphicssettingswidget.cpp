@@ -5,13 +5,22 @@
 #include "qtutils.h"
 #include "settingswindow.h"
 #include "settingwidgetbinder.h"
+#include "ui_texturereplacementsettingsdialog.h"
 
 #include "core/game_database.h"
 #include "core/gpu.h"
 #include "core/settings.h"
+#include "core/texture_replacements.h"
 
+#include "util/ini_settings_interface.h"
 #include "util/media_capture.h"
 
+#include "common/error.h"
+
+#include <QtCore/QDir>
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QFileDialog>
+#include <QtWidgets/QInputDialog>
 #include <algorithm>
 
 static QVariant GetMSAAModeValue(uint multisamples, bool ssaa)
@@ -234,26 +243,29 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
 
   // Texture Replacements Tab
 
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.vramWriteReplacement, "TextureReplacements",
-                                               "EnableVRAMWriteReplacements", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.enableTextureCache, "GPU", "EnableTextureCache", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.useOldMDECRoutines, "Hacks", "UseOldMDECRoutines", false);
+
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.enableTextureReplacements, "TextureReplacements",
+                                               "EnableTextureReplacements", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.preloadTextureReplacements, "TextureReplacements",
                                                "PreloadTextures", false);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.useOldMDECRoutines, "Hacks", "UseOldMDECRoutines", false);
+
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.enableTextureDumping, "TextureReplacements", "DumpTextures",
+                                               false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.vramWriteReplacement, "TextureReplacements",
+                                               "EnableVRAMWriteReplacements", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.vramWriteDumping, "TextureReplacements", "DumpVRAMWrites",
                                                false);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.setVRAMWriteAlphaChannel, "TextureReplacements",
-                                               "DumpVRAMWriteForceAlphaChannel", true);
-  SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.minDumpedVRAMWriteWidth, "TextureReplacements",
-                                              "DumpVRAMWriteWidthThreshold",
-                                              Settings::DEFAULT_VRAM_WRITE_DUMP_WIDTH_THRESHOLD);
-  SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.minDumpedVRAMWriteHeight, "TextureReplacements",
-                                              "DumpVRAMWriteHeightThreshold",
-                                              Settings::DEFAULT_VRAM_WRITE_DUMP_HEIGHT_THRESHOLD);
 
+  connect(m_ui.enableTextureCache, &QCheckBox::checkStateChanged, this,
+          &GraphicsSettingsWidget::onEnableTextureCacheChanged);
+  connect(m_ui.enableTextureReplacements, &QCheckBox::checkStateChanged, this,
+          &GraphicsSettingsWidget::onEnableAnyTextureReplacementsChanged);
   connect(m_ui.vramWriteReplacement, &QCheckBox::checkStateChanged, this,
           &GraphicsSettingsWidget::onEnableAnyTextureReplacementsChanged);
-  connect(m_ui.vramWriteDumping, &QCheckBox::checkStateChanged, this,
-          &GraphicsSettingsWidget::onEnableVRAMWriteDumpingChanged);
+  connect(m_ui.textureReplacementOptions, &QPushButton::clicked, this,
+          &GraphicsSettingsWidget::onTextureReplacementOptionsClicked);
 
   // Debugging Tab
 
@@ -274,8 +286,8 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
   onMediaCaptureBackendChanged();
   onMediaCaptureAudioEnabledChanged();
   onMediaCaptureVideoEnabledChanged();
+  onEnableTextureCacheChanged();
   onEnableAnyTextureReplacementsChanged();
-  onEnableVRAMWriteDumpingChanged();
   onShowDebugSettingsChanged(QtHost::ShouldShowDebugOptions());
 
   // Rendering Tab
@@ -555,14 +567,8 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
   dialog->registerWidgetHelp(m_ui.useOldMDECRoutines, tr("Use Old MDEC Routines"), tr("Unchecked"),
                              tr("Enables the older, less accurate MDEC decoding routines. May be required for old "
                                 "replacement backgrounds to match/load."));
-  dialog->registerWidgetHelp(m_ui.setVRAMWriteAlphaChannel, tr("Set Alpha Channel"), tr("Checked"),
-                             tr("Clears the mask/transparency bit in VRAM write dumps."));
   dialog->registerWidgetHelp(m_ui.vramWriteDumping, tr("Enable VRAM Write Dumping"), tr("Unchecked"),
                              tr("Writes backgrounds that can be replaced to the dump directory."));
-  dialog->registerWidgetHelp(m_ui.minDumpedVRAMWriteWidth, tr("Dump Size Threshold"), tr("128px"),
-                             tr("Determines the threshold that triggers a VRAM write to be dumped."));
-  dialog->registerWidgetHelp(m_ui.minDumpedVRAMWriteHeight, tr("Dump Size Threshold"), tr("128px"),
-                             tr("Determines the threshold that triggers a VRAM write to be dumped."));
 
   // Debugging Tab
 
@@ -1108,19 +1114,112 @@ void GraphicsSettingsWidget::onMediaCaptureAudioEnabledChanged()
   m_ui.audioCaptureArguments->setEnabled(enabled);
 }
 
+void GraphicsSettingsWidget::onEnableTextureCacheChanged()
+{
+  const bool tc_enabled = m_dialog->getEffectiveBoolValue("GPU", "EnableTextureCache", false);
+  m_ui.enableTextureReplacements->setEnabled(tc_enabled);
+  m_ui.enableTextureDumping->setEnabled(tc_enabled);
+}
+
 void GraphicsSettingsWidget::onEnableAnyTextureReplacementsChanged()
 {
   const bool any_replacements_enabled =
-    m_dialog->getEffectiveBoolValue("TextureReplacements", "EnableVRAMWriteReplacements", false);
+    (m_dialog->getEffectiveBoolValue("TextureReplacements", "EnableVRAMWriteReplacements", false) ||
+     (m_dialog->getEffectiveBoolValue("GPU", "EnableTextureCache", false) &&
+      m_dialog->getEffectiveBoolValue("TextureReplacements", "EnableTextureReplacements", false)));
   m_ui.preloadTextureReplacements->setEnabled(any_replacements_enabled);
 }
 
-void GraphicsSettingsWidget::onEnableVRAMWriteDumpingChanged()
+void GraphicsSettingsWidget::onTextureReplacementOptionsClicked()
 {
-  const bool enabled = m_dialog->getEffectiveBoolValue("TextureReplacements", "DumpVRAMWrites", false);
-  m_ui.setVRAMWriteAlphaChannel->setEnabled(enabled);
-  m_ui.minDumpedVRAMWriteWidth->setEnabled(enabled);
-  m_ui.minDumpedVRAMWriteHeight->setEnabled(enabled);
-  m_ui.vramWriteDumpThresholdLabel->setEnabled(enabled);
-  m_ui.vramWriteDumpThresholdSeparator->setEnabled(enabled);
+  QDialog dlg(QtUtils::GetRootWidget(this));
+
+  Ui::TextureReplacementSettingsDialog dlgui;
+  dlgui.setupUi(&dlg);
+  dlgui.icon->setPixmap(QIcon::fromTheme(QStringLiteral("image-fill")).pixmap(32, 32));
+
+  constexpr Settings::TextureReplacementSettings::Configuration default_replacement_config;
+  SettingsInterface* const sif = m_dialog->getSettingsInterface();
+
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, dlgui.dumpTexturePages, "TextureReplacements", "DumpTexturePages",
+                                               default_replacement_config.dump_texture_pages);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, dlgui.dumpFullTexturePages, "TextureReplacements",
+                                               "DumpFullTexturePages",
+                                               default_replacement_config.dump_full_texture_pages);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, dlgui.dumpC16Textures, "TextureReplacements", "DumpC16Textures",
+                                               default_replacement_config.dump_c16_textures);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, dlgui.reducePaletteRange, "TextureReplacements",
+                                               "ReducePaletteRange", default_replacement_config.reduce_palette_range);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, dlgui.convertCopiesToWrites, "TextureReplacements",
+                                               "ConvertCopiesToWrites",
+                                               default_replacement_config.convert_copies_to_writes);
+  SettingWidgetBinder::BindWidgetToIntSetting(sif, dlgui.maxVRAMWriteSplits, "TextureReplacements",
+                                              "MaxVRAMWriteSplits", default_replacement_config.max_vram_write_splits);
+  SettingWidgetBinder::BindWidgetToIntSetting(sif, dlgui.minDumpedTextureWidth, "TextureReplacements",
+                                              "DumpTextureWidthThreshold",
+                                              default_replacement_config.texture_dump_width_threshold);
+  SettingWidgetBinder::BindWidgetToIntSetting(sif, dlgui.minDumpedTextureHeight, "TextureReplacements",
+                                              "DumpTextureHeightThreshold",
+                                              default_replacement_config.texture_dump_height_threshold);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, dlgui.setTextureDumpAlphaChannel, "TextureReplacements",
+                                               "DumpTextureForceAlphaChannel",
+                                               default_replacement_config.dump_texture_force_alpha_channel);
+
+  SettingWidgetBinder::BindWidgetToIntSetting(sif, dlgui.minDumpedVRAMWriteWidth, "TextureReplacements",
+                                              "DumpVRAMWriteWidthThreshold",
+                                              default_replacement_config.vram_write_dump_width_threshold);
+  SettingWidgetBinder::BindWidgetToIntSetting(sif, dlgui.minDumpedVRAMWriteHeight, "TextureReplacements",
+                                              "DumpVRAMWriteHeightThreshold",
+                                              default_replacement_config.vram_write_dump_height_threshold);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, dlgui.setVRAMWriteAlphaChannel, "TextureReplacements",
+                                               "DumpVRAMWriteForceAlphaChannel",
+                                               default_replacement_config.dump_vram_write_force_alpha_channel);
+
+  dlgui.dumpFullTexturePages->setEnabled(
+    m_dialog->getEffectiveBoolValue("TextureReplacements", "DumpTexturePages", false));
+  connect(dlgui.dumpTexturePages, &QCheckBox::checkStateChanged, this, [this, full_cb = dlgui.dumpFullTexturePages]() {
+    full_cb->setEnabled(m_dialog->getEffectiveBoolValue("TextureReplacements", "DumpTexturePages", false));
+  });
+  connect(dlgui.closeButton, &QPushButton::clicked, &dlg, &QDialog::accept);
+  connect(dlgui.exportButton, &QPushButton::clicked, &dlg, [&dlg, &dlgui]() {
+    Settings::TextureReplacementSettings::Configuration config;
+
+    config.dump_texture_pages = dlgui.dumpTexturePages->isChecked();
+    config.dump_full_texture_pages = dlgui.dumpFullTexturePages->isChecked();
+    config.dump_c16_textures = dlgui.dumpC16Textures->isChecked();
+    config.reduce_palette_range = dlgui.reducePaletteRange->isChecked();
+    config.convert_copies_to_writes = dlgui.convertCopiesToWrites->isChecked();
+    config.max_vram_write_splits = dlgui.maxVRAMWriteSplits->value();
+    config.texture_dump_width_threshold = dlgui.minDumpedTextureWidth->value();
+    config.texture_dump_height_threshold = dlgui.minDumpedTextureHeight->value();
+    config.dump_texture_force_alpha_channel = dlgui.setTextureDumpAlphaChannel->isChecked();
+    config.vram_write_dump_width_threshold = dlgui.minDumpedVRAMWriteWidth->value();
+    config.vram_write_dump_height_threshold = dlgui.minDumpedVRAMWriteHeight->value();
+    config.dump_vram_write_force_alpha_channel = dlgui.setTextureDumpAlphaChannel->isChecked();
+
+    QInputDialog idlg(&dlg);
+    idlg.resize(600, 400);
+    idlg.setWindowTitle(tr("Texture Replacement Configuration"));
+    idlg.setInputMode(QInputDialog::TextInput);
+    idlg.setOption(QInputDialog::UsePlainTextEditForTextInput);
+    idlg.setLabelText(tr("Texture Replacement Configuration (config.yaml)"));
+    idlg.setTextValue(QString::fromStdString(TextureReplacements::ExportConfiguration(config, false)));
+    idlg.setOkButtonText(tr("Save"));
+    if (idlg.exec())
+    {
+      const QString path = QFileDialog::getSaveFileName(&dlg, tr("Save Configuration"), QString(),
+                                                        tr("Configuration Files (config.yaml)"));
+      if (path.isEmpty())
+        return;
+
+      Error error;
+      if (!FileSystem::WriteStringToFile(QDir::toNativeSeparators(path).toUtf8().constData(),
+                                         idlg.textValue().toStdString(), &error))
+      {
+        QMessageBox::critical(&dlg, tr("Write Failed"), QString::fromStdString(error.GetDescription()));
+      }
+    }
+  });
+
+  dlg.exec();
 }
