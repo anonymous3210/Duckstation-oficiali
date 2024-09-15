@@ -1959,8 +1959,6 @@ void System::DestroySystem()
 
   ClearMemorySaveStates();
 
-  TextureReplacements::Shutdown();
-
   PCDrv::Shutdown();
   SIO::Shutdown();
   MDEC::Shutdown();
@@ -1974,6 +1972,7 @@ void System::DestroySystem()
   CPU::Shutdown();
   Bus::Shutdown();
   TimingEvents::Shutdown();
+  TextureReplacements::Shutdown();
   ClearRunningGame();
 
   // Restore present-all-frames behavior.
@@ -4368,6 +4367,7 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
         g_settings.gpu_downsample_mode != old_settings.gpu_downsample_mode ||
         g_settings.gpu_downsample_scale != old_settings.gpu_downsample_scale ||
         g_settings.gpu_wireframe_mode != old_settings.gpu_wireframe_mode ||
+        g_settings.gpu_texture_cache != old_settings.gpu_texture_cache ||
         g_settings.display_deinterlacing_mode != old_settings.display_deinterlacing_mode ||
         g_settings.display_24bit_chroma_smoothing != old_settings.display_24bit_chroma_smoothing ||
         g_settings.display_crop_mode != old_settings.display_crop_mode ||
@@ -4383,7 +4383,10 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
         g_settings.display_line_start_offset != old_settings.display_line_start_offset ||
         g_settings.display_line_end_offset != old_settings.display_line_end_offset ||
         g_settings.rewind_enable != old_settings.rewind_enable ||
-        g_settings.runahead_frames != old_settings.runahead_frames)
+        g_settings.runahead_frames != old_settings.runahead_frames ||
+        g_settings.texture_replacements.dump_textures != old_settings.texture_replacements.dump_textures ||
+        g_settings.texture_replacements.enable_texture_replacements !=
+          old_settings.texture_replacements.enable_texture_replacements)
     {
       g_gpu->UpdateSettings(old_settings);
       if (IsPaused())
@@ -4436,10 +4439,14 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
 
     if (g_settings.texture_replacements.enable_vram_write_replacements !=
           old_settings.texture_replacements.enable_vram_write_replacements ||
+        g_settings.texture_replacements.enable_texture_replacements !=
+          old_settings.texture_replacements.enable_texture_replacements ||
         g_settings.texture_replacements.preload_textures != old_settings.texture_replacements.preload_textures)
     {
       TextureReplacements::Reload();
     }
+    if (g_settings.texture_replacements.config != old_settings.texture_replacements.config)
+      TextureReplacements::UpdateConfiguration();
 
     if (g_settings.audio_backend != old_settings.audio_backend ||
         g_settings.increase_timer_resolution != old_settings.increase_timer_resolution ||
@@ -4564,53 +4571,66 @@ void System::WarnAboutUnsafeSettings()
   LargeString messages;
   auto append = [&messages](const char* icon, std::string_view msg) { messages.append_format("{} {}\n", icon, msg); };
 
-  if (!g_settings.disable_all_enhancements && ImGuiManager::IsShowingOSDMessages())
+  if (!g_settings.disable_all_enhancements)
   {
-    if (g_settings.cpu_overclock_active)
+    if (ImGuiManager::IsShowingOSDMessages())
     {
-      append(ICON_EMOJI_WARNING,
-             SmallString::from_format(
-               TRANSLATE_FS("System", "CPU clock speed is set to {}% ({} / {}). This may crash games."),
-               g_settings.GetCPUOverclockPercent(), g_settings.cpu_overclock_numerator,
-               g_settings.cpu_overclock_denominator));
-    }
-    if (g_settings.cdrom_read_speedup > 1)
-    {
-      append(ICON_EMOJI_WARNING,
-             SmallString::from_format(
-               TRANSLATE_FS("System", "CD-ROM read speedup set to {}x (effective speed {}x). This may crash games."),
-               g_settings.cdrom_read_speedup, g_settings.cdrom_read_speedup * 2));
-    }
-    if (g_settings.cdrom_seek_speedup != 1)
-    {
-      append(ICON_EMOJI_WARNING,
-             SmallString::from_format(TRANSLATE_FS("System", "CD-ROM seek speedup set to {}. This may crash games."),
-                                      (g_settings.cdrom_seek_speedup == 0) ?
-                                        TinyString(TRANSLATE_SV("System", "Instant")) :
-                                        TinyString::from_format("{}x", g_settings.cdrom_seek_speedup)));
-    }
-    if (g_settings.gpu_force_video_timing != ForceVideoTimingMode::Disabled)
-    {
-      append(ICON_FA_TV, TRANSLATE_SV("System", "Force frame timings is enabled. Games may run at incorrect speeds."));
-    }
-    if (!g_settings.IsUsingSoftwareRenderer())
-    {
-      if (g_settings.gpu_multisamples != 1)
+      if (g_settings.cpu_overclock_active)
       {
         append(ICON_EMOJI_WARNING,
-               TRANSLATE_SV("System", "Multisample anti-aliasing is enabled, some games may not render correctly."));
+               SmallString::from_format(
+                 TRANSLATE_FS("System", "CPU clock speed is set to {}% ({} / {}). This may crash games."),
+                 g_settings.GetCPUOverclockPercent(), g_settings.cpu_overclock_numerator,
+                 g_settings.cpu_overclock_denominator));
       }
-      if (g_settings.gpu_resolution_scale > 1 && g_settings.gpu_force_round_texcoords)
+      if (g_settings.cdrom_read_speedup > 1)
       {
-        append(
-          ICON_EMOJI_WARNING,
-          TRANSLATE_SV("System", "Round upscaled texture coordinates is enabled. This may cause rendering errors."));
+        append(ICON_EMOJI_WARNING,
+               SmallString::from_format(
+                 TRANSLATE_FS("System", "CD-ROM read speedup set to {}x (effective speed {}x). This may crash games."),
+                 g_settings.cdrom_read_speedup, g_settings.cdrom_read_speedup * 2));
+      }
+      if (g_settings.cdrom_seek_speedup != 1)
+      {
+        append(ICON_EMOJI_WARNING,
+               SmallString::from_format(TRANSLATE_FS("System", "CD-ROM seek speedup set to {}. This may crash games."),
+                                        (g_settings.cdrom_seek_speedup == 0) ?
+                                          TinyString(TRANSLATE_SV("System", "Instant")) :
+                                          TinyString::from_format("{}x", g_settings.cdrom_seek_speedup)));
+      }
+      if (g_settings.gpu_force_video_timing != ForceVideoTimingMode::Disabled)
+      {
+        append(ICON_FA_TV,
+               TRANSLATE_SV("System", "Force frame timings is enabled. Games may run at incorrect speeds."));
+      }
+      if (!g_settings.IsUsingSoftwareRenderer())
+      {
+        if (g_settings.gpu_multisamples != 1)
+        {
+          append(ICON_EMOJI_WARNING,
+                 TRANSLATE_SV("System", "Multisample anti-aliasing is enabled, some games may not render correctly."));
+        }
+        if (g_settings.gpu_resolution_scale > 1 && g_settings.gpu_force_round_texcoords)
+        {
+          append(
+            ICON_EMOJI_WARNING,
+            TRANSLATE_SV("System", "Round upscaled texture coordinates is enabled. This may cause rendering errors."));
+        }
+      }
+      if (g_settings.enable_8mb_ram)
+      {
+        append(ICON_EMOJI_WARNING,
+               TRANSLATE_SV("System", "8MB RAM is enabled, this may be incompatible with some games."));
       }
     }
-    if (g_settings.enable_8mb_ram)
+
+    // Always display TC warning.
+    if (g_settings.gpu_texture_cache)
     {
-      append(ICON_EMOJI_WARNING,
-             TRANSLATE_SV("System", "8MB RAM is enabled, this may be incompatible with some games."));
+      append(
+        ICON_FA_PAINT_ROLLER,
+        TRANSLATE_SV("System",
+                     "Texture cache is enabled. This feature is experimental, some games may not render correctly."));
     }
   }
 
