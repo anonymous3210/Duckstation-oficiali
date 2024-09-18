@@ -1,7 +1,8 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "coverdownloaddialog.h"
+#include "qthost.h"
 
 #include "core/game_list.h"
 
@@ -10,7 +11,8 @@
 CoverDownloadDialog::CoverDownloadDialog(QWidget* parent /*= nullptr*/) : QDialog(parent)
 {
   m_ui.setupUi(this);
-  m_ui.coverIcon->setPixmap(QIcon::fromTheme("image-fill").pixmap(32));
+  setWindowIcon(QtHost::GetAppIcon());
+  m_ui.coverIcon->setPixmap(QIcon::fromTheme("artboard-2-line").pixmap(32));
   updateEnabled();
 
   connect(m_ui.start, &QPushButton::clicked, this, &CoverDownloadDialog::onStartClicked);

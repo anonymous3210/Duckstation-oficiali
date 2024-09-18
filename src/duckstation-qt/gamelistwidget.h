@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 #include "ui_emptygamelistwidget.h"
@@ -43,14 +43,17 @@ public:
 
   void initialize();
   void resizeTableViewColumnsToFit();
-  void reloadCommonImages();
 
   void refresh(bool invalidate_cache);
+  void refreshModel();
   void cancelRefresh();
+  void reloadThemeSpecificImages();
 
   bool isShowingGameList() const;
   bool isShowingGameGrid() const;
-  bool getShowGridCoverTitles() const;
+  bool isShowingGridCoverTitles() const;
+  bool isMergingDiscSets() const;
+  bool isShowingGameIcons() const;
 
   const GameList::Entry* getSelectedEntry() const;
 
@@ -66,7 +69,7 @@ Q_SIGNALS:
   void layoutChange();
 
 private Q_SLOTS:
-  void onRefreshProgress(const QString& status, int current, int total);
+  void onRefreshProgress(const QString& status, int current, int total, float time);
   void onRefreshComplete();
 
   void onSelectionModelCurrentChanged(const QModelIndex& current, const QModelIndex& previous);
@@ -76,11 +79,14 @@ private Q_SLOTS:
   void onTableViewHeaderSortIndicatorChanged(int, Qt::SortOrder);
   void onListViewItemActivated(const QModelIndex& index);
   void onListViewContextMenuRequested(const QPoint& point);
+  void onCoverScaleChanged();
 
 public Q_SLOTS:
   void showGameList();
   void showGameGrid();
   void setShowCoverTitles(bool enabled);
+  void setMergeDiscSets(bool enabled);
+  void setShowGameIcons(bool enabled);
   void gridZoomIn();
   void gridZoomOut();
   void gridIntScale(int int_scale);
@@ -96,7 +102,6 @@ private:
   void loadTableViewColumnSortSettings();
   void saveTableViewColumnSortSettings();
   void listZoom(float delta);
-  void updateListFont();
   void updateToolbar();
 
   Ui::GameListWidget m_ui;

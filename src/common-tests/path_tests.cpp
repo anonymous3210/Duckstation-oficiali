@@ -1,11 +1,12 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "common/path.h"
 #include "common/types.h"
+
 #include <gtest/gtest.h>
 
-TEST(FileSystem, ToNativePath)
+TEST(Path, ToNativePath)
 {
   ASSERT_EQ(Path::ToNativePath(""), "");
 
@@ -29,7 +30,7 @@ TEST(FileSystem, ToNativePath)
 #endif
 }
 
-TEST(FileSystem, IsAbsolute)
+TEST(Path, IsAbsolute)
 {
   ASSERT_FALSE(Path::IsAbsolute(""));
   ASSERT_FALSE(Path::IsAbsolute("foo"));
@@ -61,7 +62,7 @@ TEST(FileSystem, IsAbsolute)
 #endif
 }
 
-TEST(FileSystem, Canonicalize)
+TEST(Path, Canonicalize)
 {
   ASSERT_EQ(Path::Canonicalize(""), Path::ToNativePath(""));
   ASSERT_EQ(Path::Canonicalize("foo/bar/../baz"), Path::ToNativePath("foo/baz"));
@@ -72,10 +73,8 @@ TEST(FileSystem, Canonicalize)
   ASSERT_EQ(Path::Canonicalize("./foo"), Path::ToNativePath("foo"));
   ASSERT_EQ(Path::Canonicalize("../foo"), Path::ToNativePath("../foo"));
   ASSERT_EQ(Path::Canonicalize("foo/b🙃ar/../b🙃az/./foo"), Path::ToNativePath("foo/b🙃az/foo"));
-  ASSERT_EQ(
-    Path::Canonicalize(
-      "ŻąłóРстуぬねのはen🍪⟑η∏☉ⴤℹ︎∩₲ ₱⟑♰⫳🐱/b🙃az/../foℹ︎o"),
-    Path::ToNativePath("ŻąłóРстуぬねのはen🍪⟑η∏☉ⴤℹ︎∩₲ ₱⟑♰⫳🐱/foℹ︎o"));
+  ASSERT_EQ(Path::Canonicalize("ŻąłóРстуぬねのはen🍪⟑η∏☉ⴤℹ︎∩₲ ₱⟑♰⫳🐱/b🙃az/../foℹ︎o"),
+            Path::ToNativePath("ŻąłóРстуぬねのはen🍪⟑η∏☉ⴤℹ︎∩₲ ₱⟑♰⫳🐱/foℹ︎o"));
 #ifdef _WIN32
   ASSERT_EQ(Path::Canonicalize("C:\\foo\\bar\\..\\baz\\.\\foo"), "C:\\foo\\baz\\foo");
   ASSERT_EQ(Path::Canonicalize("C:/foo\\bar\\..\\baz\\.\\foo"), "C:\\foo\\baz\\foo");
@@ -87,7 +86,7 @@ TEST(FileSystem, Canonicalize)
 #endif
 }
 
-TEST(FileSystem, Combine)
+TEST(Path, Combine)
 {
   ASSERT_EQ(Path::Combine("", ""), Path::ToNativePath(""));
   ASSERT_EQ(Path::Combine("foo", "bar"), Path::ToNativePath("foo/bar"));
@@ -108,7 +107,7 @@ TEST(FileSystem, Combine)
 #endif
 }
 
-TEST(FileSystem, AppendDirectory)
+TEST(Path, AppendDirectory)
 {
   ASSERT_EQ(Path::AppendDirectory("foo/bar", "baz"), Path::ToNativePath("foo/baz/bar"));
   ASSERT_EQ(Path::AppendDirectory("", "baz"), Path::ToNativePath("baz"));
@@ -122,7 +121,7 @@ TEST(FileSystem, AppendDirectory)
 #endif
 }
 
-TEST(FileSystem, MakeRelative)
+TEST(Path, MakeRelative)
 {
   ASSERT_EQ(Path::MakeRelative("", ""), Path::ToNativePath(""));
   ASSERT_EQ(Path::MakeRelative("foo", ""), Path::ToNativePath("foo"));
@@ -141,8 +140,7 @@ TEST(FileSystem, MakeRelative)
   ASSERT_EQ(Path::MakeRelative(A "foo/b🙃ar", A "foo/b🙃az"), Path::ToNativePath("../b🙃ar"));
   ASSERT_EQ(Path::MakeRelative(A "f🙃oo/b🙃ar", A "f🙃oo/b🙃az"), Path::ToNativePath("../b🙃ar"));
   ASSERT_EQ(
-    Path::MakeRelative(A "ŻąłóРстуぬねのはen🍪⟑η∏☉ⴤℹ︎∩₲ ₱⟑♰⫳🐱/b🙃ar",
-                       A "ŻąłóРстуぬねのはen🍪⟑η∏☉ⴤℹ︎∩₲ ₱⟑♰⫳🐱/b🙃az"),
+    Path::MakeRelative(A "ŻąłóРстуぬねのはen🍪⟑η∏☉ⴤℹ︎∩₲ ₱⟑♰⫳🐱/b🙃ar", A "ŻąłóРстуぬねのはen🍪⟑η∏☉ⴤℹ︎∩₲ ₱⟑♰⫳🐱/b🙃az"),
     Path::ToNativePath("../b🙃ar"));
 
 #undef A
@@ -154,7 +152,7 @@ TEST(FileSystem, MakeRelative)
 #endif
 }
 
-TEST(FileSystem, GetExtension)
+TEST(Path, GetExtension)
 {
   ASSERT_EQ(Path::GetExtension("foo"), "");
   ASSERT_EQ(Path::GetExtension("foo.txt"), "txt");
@@ -164,7 +162,7 @@ TEST(FileSystem, GetExtension)
   ASSERT_EQ(Path::GetExtension("a/b/foo"), "");
 }
 
-TEST(FileSystem, GetFileName)
+TEST(Path, GetFileName)
 {
   ASSERT_EQ(Path::GetFileName(""), "");
   ASSERT_EQ(Path::GetFileName("foo"), "foo");
@@ -179,7 +177,7 @@ TEST(FileSystem, GetFileName)
 #endif
 }
 
-TEST(FileSystem, GetFileTitle)
+TEST(Path, GetFileTitle)
 {
   ASSERT_EQ(Path::GetFileTitle(""), "");
   ASSERT_EQ(Path::GetFileTitle("foo"), "foo");
@@ -193,7 +191,7 @@ TEST(FileSystem, GetFileTitle)
 #endif
 }
 
-TEST(FileSystem, GetDirectory)
+TEST(Path, GetDirectory)
 {
   ASSERT_EQ(Path::GetDirectory(""), "");
   ASSERT_EQ(Path::GetDirectory("foo"), "");
@@ -207,7 +205,7 @@ TEST(FileSystem, GetDirectory)
 #endif
 }
 
-TEST(FileSystem, ChangeFileName)
+TEST(Path, ChangeFileName)
 {
   ASSERT_EQ(Path::ChangeFileName("", ""), Path::ToNativePath(""));
   ASSERT_EQ(Path::ChangeFileName("", "bar"), Path::ToNativePath("bar"));
@@ -227,13 +225,14 @@ TEST(FileSystem, ChangeFileName)
 #endif
 }
 
-TEST(FileSystem, SanitizeFileName)
+TEST(Path, SanitizeFileName)
 {
   ASSERT_EQ(Path::SanitizeFileName("foo"), "foo");
   ASSERT_EQ(Path::SanitizeFileName("foo/bar"), "foo_bar");
   ASSERT_EQ(Path::SanitizeFileName("f🙃o"), "f🙃o");
   ASSERT_EQ(Path::SanitizeFileName("ŻąłóРстуぬねのはen🍪⟑η∏☉ⴤℹ︎∩₲ ₱⟑♰⫳🐱"), "ŻąłóРстуぬねのはen🍪⟑η∏☉ⴤℹ︎∩₲ ₱⟑♰⫳🐱");
-  ASSERT_EQ(Path::SanitizeFileName("abcdefghijlkmnopqrstuvwxyz-0123456789+&=_[]{}"), "abcdefghijlkmnopqrstuvwxyz-0123456789+&=_[]{}");
+  ASSERT_EQ(Path::SanitizeFileName("abcdefghijlkmnopqrstuvwxyz-0123456789+&=_[]{}"),
+            "abcdefghijlkmnopqrstuvwxyz-0123456789+&=_[]{}");
   ASSERT_EQ(Path::SanitizeFileName("some*path**with*asterisks"), "some_path__with_asterisks");
 #ifdef _WIN32
   ASSERT_EQ(Path::SanitizeFileName("foo:"), "foo_");
@@ -243,4 +242,38 @@ TEST(FileSystem, SanitizeFileName)
   ASSERT_EQ(Path::SanitizeFileName("foo\\bar", false), "foo\\bar");
 #endif
   ASSERT_EQ(Path::SanitizeFileName("foo/bar", false), "foo/bar");
+}
+
+TEST(Path, RemoveLengthLimits)
+{
+#ifdef _WIN32
+  ASSERT_EQ(Path::RemoveLengthLimits("C:\\foo"), "\\\\?\\C:\\foo");
+  ASSERT_EQ(Path::RemoveLengthLimits("\\\\foo\\bar\\baz"), "\\\\?\\UNC\\foo\\bar\\baz");
+#else
+  ASSERT_EQ(Path::RemoveLengthLimits("/foo/bar/baz"), "/foo/bar/baz");
+#endif
+}
+
+#if 0
+
+// Relies on presence of files.
+TEST(Path, RealPath)
+{
+#ifdef _WIN32
+  ASSERT_EQ(Path::RealPath("C:\\Users\\Me\\Desktop\\foo\\baz"), "C:\\Users\\Me\\Desktop\\foo\\bar\\baz");
+#else
+  ASSERT_EQ(Path::RealPath("/lib/foo/bar"), "/usr/lib/foo/bar");
+#endif
+}
+
+#endif
+
+TEST(Path, CreateFileURL)
+{
+#ifdef _WIN32
+  ASSERT_EQ(Path::CreateFileURL("C:\\foo\\bar"), "file:///C:/foo/bar");
+  ASSERT_EQ(Path::CreateFileURL("\\\\server\\share\\file.txt"), "file://server/share/file.txt");
+#else
+  ASSERT_EQ(Path::CreateFileURL("/foo/bar"), "file:///foo/bar");
+#endif
 }

@@ -1,15 +1,20 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cd_image.h"
 #include "cd_subchannel_replacement.h"
+
 #include "common/assert.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/path.h"
+
 #include <algorithm>
 #include <cerrno>
+
 Log_SetChannel(CDImageMemory);
+
+namespace {
 
 class CDImageMemory : public CDImage
 {
@@ -33,6 +38,8 @@ private:
   CDSubChannelReplacement m_sbi;
 };
 
+} // namespace
+
 CDImageMemory::CDImageMemory() = default;
 
 CDImageMemory::~CDImageMemory()
@@ -55,17 +62,17 @@ bool CDImageMemory::CopyImage(CDImage* image, ProgressCallback* progress)
   if ((static_cast<u64>(RAW_SECTOR_SIZE) * static_cast<u64>(m_memory_sectors)) >=
       static_cast<u64>(std::numeric_limits<size_t>::max()))
   {
-    progress->DisplayFormattedModalError("Insufficient address space");
+    progress->ModalError("Insufficient address space");
     return false;
   }
 
-  progress->SetFormattedStatusText("Allocating memory for %u sectors...", m_memory_sectors);
+  progress->FormatStatusText("Allocating memory for {} sectors...", m_memory_sectors);
 
   m_memory =
     static_cast<u8*>(std::malloc(static_cast<size_t>(RAW_SECTOR_SIZE) * static_cast<size_t>(m_memory_sectors)));
   if (!m_memory)
   {
-    progress->DisplayFormattedModalError("Failed to allocate memory for %u sectors", m_memory_sectors);
+    progress->FormatModalError("Failed to allocate memory for {} sectors", m_memory_sectors);
     return false;
   }
 
@@ -85,7 +92,7 @@ bool CDImageMemory::CopyImage(CDImage* image, ProgressCallback* progress)
     {
       if (!image->ReadSectorFromIndex(memory_ptr, index, lba))
       {
-        Log_ErrorPrintf("Failed to read LBA %u in index %u", lba, i);
+        ERROR_LOG("Failed to read LBA {} in index {}", lba, i);
         return false;
       }
 
@@ -115,7 +122,7 @@ bool CDImageMemory::CopyImage(CDImage* image, ProgressCallback* progress)
   m_filename = image->GetFileName();
   m_lba_count = image->GetLBACount();
 
-  m_sbi.LoadSBI(Path::ReplaceExtension(m_filename, "sbi").c_str());
+  m_sbi.LoadFromImagePath(m_filename);
 
   return Seek(1, Position{0, 0, 0});
 }

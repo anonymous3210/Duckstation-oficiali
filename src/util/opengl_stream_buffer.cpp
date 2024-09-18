@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "opengl_stream_buffer.h"
 
@@ -29,7 +29,7 @@ void OpenGLStreamBuffer::Unbind()
   glBindBuffer(m_target, 0);
 }
 
-void OpenGLStreamBuffer::SetDebugName(const std::string_view& name)
+void OpenGLStreamBuffer::SetDebugName(std::string_view name)
 {
 #ifdef _DEBUG
   if (glObjectLabel)
@@ -267,9 +267,15 @@ public:
     DebugAssert((m_position + used_size) <= m_size);
     if (!m_coherent)
     {
-      // TODO: shouldn't be needed anymore
-      Bind();
-      glFlushMappedBufferRange(m_target, m_position, used_size);
+      if (GLAD_GL_VERSION_4_5 || GLAD_GL_ARB_direct_state_access)
+      {
+        glFlushMappedNamedBufferRange(m_buffer_id, m_position, used_size);
+      }
+      else
+      {
+        Bind();
+        glFlushMappedBufferRange(m_target, m_position, used_size);
+      }
     }
 
     const u32 prev_position = m_position;

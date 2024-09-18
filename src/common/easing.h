@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 #include "types.h"
@@ -132,7 +132,7 @@ ALWAYS_INLINE_RELEASE static T InExpo(T t)
 template<typename T>
 ALWAYS_INLINE_RELEASE static T OutExpo(T t)
 {
-  return 1 - std::pow(2, -8 * t);
+  return 1.0f - std::pow(2.0f, -8.0f * t);
 }
 
 template<typename T>

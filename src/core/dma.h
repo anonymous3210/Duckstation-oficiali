@@ -1,7 +1,8 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
+
 #include "types.h"
 
 class StateWrapper;
@@ -33,10 +34,6 @@ u32 ReadRegister(u32 offset);
 void WriteRegister(u32 offset, u32 value);
 
 void SetRequest(Channel channel, bool request);
-
-// changing interfaces
-void SetMaxSliceTicks(TickCount ticks);
-void SetHaltTicks(TickCount ticks);
 
 void DrawDebugStateWindow();
 

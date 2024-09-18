@@ -1,26 +1,36 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cd_image_hasher.h"
 #include "cd_image.h"
+#include "host.h"
+
 #include "common/md5_digest.h"
 #include "common/string_util.h"
 
+#include "fmt/format.h"
+
 namespace CDImageHasher {
 
-static bool ReadIndex(CDImage* image, u8 track, u8 index, MD5Digest* digest, ProgressCallback* progress_callback)
+static bool ReadIndex(CDImage* image, u8 track, u8 index, MD5Digest* digest, ProgressCallback* progress_callback);
+static bool ReadTrack(CDImage* image, u8 track, MD5Digest* digest, ProgressCallback* progress_callback);
+
+} // namespace CDImageHasher
+
+bool CDImageHasher::ReadIndex(CDImage* image, u8 track, u8 index, MD5Digest* digest,
+                              ProgressCallback* progress_callback)
 {
   const CDImage::LBA index_start = image->GetTrackIndexPosition(track, index);
   const u32 index_length = image->GetTrackIndexLength(track, index);
   const u32 update_interval = std::max<u32>(index_length / 100u, 1u);
 
-  progress_callback->SetFormattedStatusText("Computing hash for track %u/index %u...", track, index);
+  progress_callback->SetStatusText(
+    fmt::format(TRANSLATE_FS("CDImageHasher", "Computing hash for Track {}/Index {}..."), track, index).c_str());
   progress_callback->SetProgressRange(index_length);
 
   if (!image->Seek(index_start))
   {
-    progress_callback->DisplayFormattedModalError("Failed to seek to sector %u for track %u index %u", index_start,
-                                                  track, index);
+    progress_callback->FormatModalError("Failed to seek to sector {} for track {} index {}", index_start, track, index);
     return false;
   }
 
@@ -32,18 +42,18 @@ static bool ReadIndex(CDImage* image, u8 track, u8 index, MD5Digest* digest, Pro
 
     if (!image->ReadRawSector(sector.data(), nullptr))
     {
-      progress_callback->DisplayFormattedModalError("Failed to read sector %u from image", image->GetPositionOnDisc());
+      progress_callback->FormatModalError("Failed to read sector {} from image", image->GetPositionOnDisc());
       return false;
     }
 
-    digest->Update(sector.data(), static_cast<u32>(sector.size()));
+    digest->Update(sector);
   }
 
   progress_callback->SetProgressValue(index_length);
   return true;
 }
 
-static bool ReadTrack(CDImage* image, u8 track, MD5Digest* digest, ProgressCallback* progress_callback)
+bool CDImageHasher::ReadTrack(CDImage* image, u8 track, MD5Digest* digest, ProgressCallback* progress_callback)
 {
   static constexpr u8 INDICES_TO_READ = 2;
 
@@ -78,26 +88,27 @@ static bool ReadTrack(CDImage* image, u8 track, MD5Digest* digest, ProgressCallb
   return true;
 }
 
-std::string HashToString(const Hash& hash)
+std::string CDImageHasher::HashToString(const Hash& hash)
 {
-  return StringUtil::StdStringFromFormat("%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x", hash[0],
-                                         hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7], hash[8],
-                                         hash[9], hash[10], hash[11], hash[12], hash[13], hash[14], hash[15]);
+  return fmt::format("{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                     hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7], hash[8], hash[9], hash[10],
+                     hash[11], hash[12], hash[13], hash[14], hash[15]);
 }
 
-std::optional<Hash> HashFromString(const std::string_view& str) {
-    auto decoded = StringUtil::DecodeHex(str);
-    if (decoded && decoded->size() == std::tuple_size_v<Hash>)
-    {
-        Hash result;
-        std::copy(decoded->begin(), decoded->end(), result.begin());
-        return result;
-    }
-    return std::nullopt;
+std::optional<CDImageHasher::Hash> CDImageHasher::HashFromString(std::string_view str)
+{
+  auto decoded = StringUtil::DecodeHex(str);
+  if (decoded && decoded->size() == std::tuple_size_v<Hash>)
+  {
+    Hash result;
+    std::copy(decoded->begin(), decoded->end(), result.begin());
+    return result;
+  }
+  return std::nullopt;
 }
 
-bool GetImageHash(CDImage* image, Hash* out_hash,
-                  ProgressCallback* progress_callback /*= ProgressCallback::NullProgressCallback*/)
+bool CDImageHasher::GetImageHash(CDImage* image, Hash* out_hash,
+                                 ProgressCallback* progress_callback /*= ProgressCallback::NullProgressCallback*/)
 {
   MD5Digest digest;
 
@@ -116,19 +127,17 @@ bool GetImageHash(CDImage* image, Hash* out_hash,
   }
 
   progress_callback->SetProgressValue(image->GetTrackCount());
-  digest.Final(out_hash->data());
+  digest.Final(*out_hash);
   return true;
 }
 
-bool GetTrackHash(CDImage* image, u8 track, Hash* out_hash,
-                  ProgressCallback* progress_callback /*= ProgressCallback::NullProgressCallback*/)
+bool CDImageHasher::GetTrackHash(CDImage* image, u8 track, Hash* out_hash,
+                                 ProgressCallback* progress_callback /*= ProgressCallback::NullProgressCallback*/)
 {
   MD5Digest digest;
   if (!ReadTrack(image, track, &digest, progress_callback))
     return false;
 
-  digest.Final(out_hash->data());
+  digest.Final(*out_hash);
   return true;
 }
-
-} // namespace CDImageHasher

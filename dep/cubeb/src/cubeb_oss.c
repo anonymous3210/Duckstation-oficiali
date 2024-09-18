@@ -14,6 +14,7 @@
 #include "cubeb/cubeb.h"
 #include "cubeb_mixer.h"
 #include "cubeb_strings.h"
+#include "cubeb_tracing.h"
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
@@ -975,6 +976,8 @@ oss_io_routine(void * arg)
   cubeb_state new_state;
   int stopped;
 
+  CUBEB_REGISTER_THREAD("cubeb rendering thread");
+
   do {
     pthread_mutex_lock(&s->mtx);
     if (s->destroying) {
@@ -1005,6 +1008,9 @@ oss_io_routine(void * arg)
   pthread_mutex_lock(&s->mtx);
   s->thread_created = false;
   pthread_mutex_unlock(&s->mtx);
+
+  CUBEB_UNREGISTER_THREAD();
+
   return NULL;
 }
 
@@ -1329,6 +1335,7 @@ static struct cubeb_ops const oss_ops = {
     .get_max_channel_count = oss_get_max_channel_count,
     .get_min_latency = oss_get_min_latency,
     .get_preferred_sample_rate = oss_get_preferred_sample_rate,
+    .get_supported_input_processing_params = NULL,
     .enumerate_devices = oss_enumerate_devices,
     .device_collection_destroy = oss_device_collection_destroy,
     .destroy = oss_destroy,
@@ -1342,6 +1349,8 @@ static struct cubeb_ops const oss_ops = {
     .stream_set_volume = oss_stream_set_volume,
     .stream_set_name = NULL,
     .stream_get_current_device = oss_get_current_device,
+    .stream_set_input_mute = NULL,
+    .stream_set_input_processing_params = NULL,
     .stream_device_destroy = oss_stream_device_destroy,
     .stream_register_device_changed_callback = NULL,
     .register_device_collection_changed = NULL};

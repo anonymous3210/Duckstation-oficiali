@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 #include "util/cd_image.h"
@@ -36,6 +36,7 @@ public:
 
   bool HasMedia() const { return static_cast<bool>(m_media); }
   const CDImage* GetMedia() const { return m_media.get(); }
+  CDImage* GetMedia() { return m_media.get(); }
   const std::string& GetMediaFileName() const { return m_media->GetFileName(); }
 
   bool IsUsingThread() const { return m_read_thread.joinable(); }

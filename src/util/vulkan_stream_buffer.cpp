@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "vulkan_stream_buffer.h"
 #include "vulkan_builders.h"
@@ -114,10 +114,9 @@ bool VulkanStreamBuffer::ReserveMemory(u32 num_bytes, u32 alignment)
   const u32 required_bytes = num_bytes + alignment;
 
   // Check for sane allocations
-  if (required_bytes > m_size)
+  if (required_bytes > m_size) [[unlikely]]
   {
-    Log_ErrorPrintf("Attempting to allocate %u bytes from a %u byte stream buffer", static_cast<u32>(num_bytes),
-                    static_cast<u32>(m_size));
+    ERROR_LOG("Attempting to allocate {} bytes from a {} byte stream buffer", num_bytes, m_size);
     Panic("Stream buffer overflow");
   }
 

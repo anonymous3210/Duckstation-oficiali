@@ -7,9 +7,13 @@
 #undef NDEBUG
 #define _DEFAULT_SOURCE
 #define _BSD_SOURCE
+#if defined(__NetBSD__)
+#define _NETBSD_SOURCE /* timersub() */
+#endif
 #define _XOPEN_SOURCE 500
 #include "cubeb-internal.h"
 #include "cubeb/cubeb.h"
+#include "cubeb_tracing.h"
 #include <alsa/asoundlib.h>
 #include <assert.h>
 #include <dlfcn.h>
@@ -579,9 +583,13 @@ alsa_run_thread(void * context)
   cubeb * ctx = context;
   int r;
 
+  CUBEB_REGISTER_THREAD("cubeb rendering thread");
+
   do {
     r = alsa_run(ctx);
   } while (r >= 0);
+
+  CUBEB_UNREGISTER_THREAD();
 
   return NULL;
 }
@@ -957,11 +965,11 @@ alsa_destroy(cubeb * ctx)
     WRAP(snd_config_delete)(ctx->local_config);
     pthread_mutex_unlock(&cubeb_alsa_mutex);
   }
-
+#ifndef DISABLE_LIBASOUND_DLOPEN
   if (ctx->libasound) {
     dlclose(ctx->libasound);
   }
-
+#endif
   free(ctx);
 }
 
@@ -1464,6 +1472,7 @@ static struct cubeb_ops const alsa_ops = {
     .get_max_channel_count = alsa_get_max_channel_count,
     .get_min_latency = alsa_get_min_latency,
     .get_preferred_sample_rate = alsa_get_preferred_sample_rate,
+    .get_supported_input_processing_params = NULL,
     .enumerate_devices = alsa_enumerate_devices,
     .device_collection_destroy = alsa_device_collection_destroy,
     .destroy = alsa_destroy,
@@ -1477,6 +1486,8 @@ static struct cubeb_ops const alsa_ops = {
     .stream_set_volume = alsa_stream_set_volume,
     .stream_set_name = NULL,
     .stream_get_current_device = NULL,
+    .stream_set_input_mute = NULL,
+    .stream_set_input_processing_params = NULL,
     .stream_device_destroy = NULL,
     .stream_register_device_changed_callback = NULL,
     .register_device_collection_changed = NULL};

@@ -1,48 +1,27 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "ini_settings_interface.h"
+
+#include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/path.h"
 #include "common/string_util.h"
+
 #include <algorithm>
 #include <iterator>
 #include <mutex>
-Log_SetChannel(INISettingsInterface);
 
-#ifdef _WIN32
-#include <io.h> // _mktemp_s
-#else
-#include <stdlib.h> // mktemp
-#endif
+Log_SetChannel(INISettingsInterface);
 
 // To prevent races between saving and loading settings, particularly with game settings,
 // we only allow one ini to be parsed at any point in time.
 static std::mutex s_ini_load_save_mutex;
 
-static std::string GetTemporaryFileName(const std::string& original_filename)
+INISettingsInterface::INISettingsInterface(std::string filename) : m_filename(std::move(filename)), m_ini(true, true)
 {
-  std::string temporary_filename;
-  temporary_filename.reserve(original_filename.length() + 8);
-  temporary_filename.append(original_filename);
-
-#ifdef _WIN32
-  temporary_filename.append(".XXXXXXX");
-  _mktemp_s(temporary_filename.data(), temporary_filename.length() + 1);
-#else
-  temporary_filename.append(".XXXXXX");
-#if defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__)
-  mkstemp(temporary_filename.data());
-#else
-  mktemp(temporary_filename.data());
-#endif
-#endif
-
-  return temporary_filename;
 }
-
-INISettingsInterface::INISettingsInterface(std::string filename) : m_filename(std::move(filename)), m_ini(true, true) {}
 
 INISettingsInterface::~INISettingsInterface()
 {
@@ -50,50 +29,56 @@ INISettingsInterface::~INISettingsInterface()
     Save();
 }
 
-bool INISettingsInterface::Load()
+bool INISettingsInterface::Load(Error* error /* = nullptr */)
 {
   if (m_filename.empty())
+  {
+    Error::SetStringView(error, "Filename is not set.");
     return false;
+  }
 
   std::unique_lock lock(s_ini_load_save_mutex);
   SI_Error err = SI_FAIL;
-  auto fp = FileSystem::OpenManagedCFile(m_filename.c_str(), "rb");
+  auto fp = FileSystem::OpenManagedCFile(m_filename.c_str(), "rb", error);
   if (fp)
+  {
     err = m_ini.LoadFile(fp.get());
+    if (err != SI_OK)
+      Error::SetStringFmt(error, "INI LoadFile() failed: {}", static_cast<int>(err));
+  }
 
   return (err == SI_OK);
 }
 
-bool INISettingsInterface::Save()
+bool INISettingsInterface::Save(Error* error /* = nullptr */)
 {
   if (m_filename.empty())
+  {
+    Error::SetStringView(error, "Filename is not set.");
     return false;
+  }
 
   std::unique_lock lock(s_ini_load_save_mutex);
-  std::string temp_filename(GetTemporaryFileName(m_filename));
+  FileSystem::AtomicRenamedFile fp = FileSystem::CreateAtomicRenamedFile(m_filename, error);
   SI_Error err = SI_FAIL;
-  std::FILE* fp = FileSystem::OpenCFile(temp_filename.c_str(), "wb");
   if (fp)
   {
-    err = m_ini.SaveFile(fp, false);
-    std::fclose(fp);
-
+    err = m_ini.SaveFile(fp.get(), false);
     if (err != SI_OK)
     {
       // remove temporary file
-      FileSystem::DeleteFile(temp_filename.c_str());
+      Error::SetStringFmt(error, "INI SaveFile() failed: {}", static_cast<int>(err));
+      FileSystem::DiscardAtomicRenamedFile(fp);
     }
-    else if (!FileSystem::RenamePath(temp_filename.c_str(), m_filename.c_str()))
+    else
     {
-      Log_ErrorPrintf("Failed to rename '%s' to '%s'", temp_filename.c_str(), m_filename.c_str());
-      FileSystem::DeleteFile(temp_filename.c_str());
-      return false;
+      err = FileSystem::CommitAtomicRenamedFile(fp, error) ? SI_OK : SI_FAIL;
     }
   }
 
   if (err != SI_OK)
   {
-    Log_WarningPrintf("Failed to save settings to '%s'.", m_filename.c_str());
+    WARNING_LOG("Failed to save settings to '{}'.", m_filename);
     return false;
   }
 
@@ -104,6 +89,11 @@ bool INISettingsInterface::Save()
 void INISettingsInterface::Clear()
 {
   m_ini.Reset();
+}
+
+bool INISettingsInterface::IsEmpty()
+{
+  return (m_ini.GetKeyCount() == 0);
 }
 
 bool INISettingsInterface::GetIntValue(const char* section, const char* key, s32* value) const
@@ -186,6 +176,16 @@ bool INISettingsInterface::GetStringValue(const char* section, const char* key, 
   return true;
 }
 
+bool INISettingsInterface::GetStringValue(const char* section, const char* key, SmallStringBase* value) const
+{
+  const char* str_value = m_ini.GetValue(section, key);
+  if (!str_value)
+    return false;
+
+  value->assign(str_value);
+  return true;
+}
+
 void INISettingsInterface::SetIntValue(const char* section, const char* key, s32 value)
 {
   m_dirty = true;
@@ -238,6 +238,29 @@ void INISettingsInterface::ClearSection(const char* section)
   m_dirty = true;
   m_ini.Delete(section, nullptr);
   m_ini.SetValue(section, nullptr, nullptr);
+}
+
+void INISettingsInterface::RemoveSection(const char* section)
+{
+  if (!m_ini.GetSection(section))
+    return;
+
+  m_dirty = true;
+  m_ini.Delete(section, nullptr);
+}
+
+void INISettingsInterface::RemoveEmptySections()
+{
+  std::list<CSimpleIniA::Entry> entries;
+  m_ini.GetAllSections(entries);
+  for (const CSimpleIniA::Entry& entry : entries)
+  {
+    if (m_ini.GetSectionSize(entry.pItem) > 0)
+      continue;
+
+    m_dirty = true;
+    m_ini.Delete(entry.pItem, nullptr);
+  }
 }
 
 std::vector<std::string> INISettingsInterface::GetStringList(const char* section, const char* key) const
@@ -296,7 +319,7 @@ std::vector<std::pair<std::string, std::string>> INISettingsInterface::GetKeyVal
     {
       if (!m_ini.GetAllValues(section, key.pItem, values)) // [[unlikely]]
       {
-        Log_ErrorPrintf("Got no values for a key returned from GetAllKeys!");
+        ERROR_LOG("Got no values for a key returned from GetAllKeys!");
         continue;
       }
       for (const Entry& value : values)

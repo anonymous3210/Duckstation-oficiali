@@ -1,11 +1,12 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "wav_writer.h"
 #include "common/file_system.h"
 #include "common/log.h"
 Log_SetChannel(WAVWriter);
 
+namespace {
 #pragma pack(push, 1)
 struct WAV_HEADER
 {
@@ -32,8 +33,7 @@ struct WAV_HEADER
   } data_chunk_header;
 };
 #pragma pack(pop)
-
-namespace Common {
+} // namespace
 
 WAVWriter::WAVWriter() = default;
 
@@ -57,7 +57,7 @@ bool WAVWriter::Open(const char* filename, u32 sample_rate, u32 num_channels)
 
   if (!WriteHeader())
   {
-    Log_ErrorPrintf("Failed to write header to file");
+    ERROR_LOG("Failed to write header to file");
     m_sample_rate = 0;
     m_num_channels = 0;
     std::fclose(m_file);
@@ -74,7 +74,7 @@ void WAVWriter::Close()
     return;
 
   if (std::fseek(m_file, 0, SEEK_SET) != 0 || !WriteHeader())
-    Log_ErrorPrintf("Failed to re-write header on file, file may be unplayable");
+    ERROR_LOG("Failed to re-write header on file, file may be unplayable");
 
   std::fclose(m_file);
   m_file = nullptr;
@@ -88,7 +88,7 @@ void WAVWriter::WriteFrames(const s16* samples, u32 num_frames)
   const u32 num_frames_written =
     static_cast<u32>(std::fwrite(samples, sizeof(s16) * m_num_channels, num_frames, m_file));
   if (num_frames_written != num_frames)
-    Log_ErrorPrintf("Only wrote %u of %u frames to output file", num_frames_written, num_frames);
+    ERROR_LOG("Only wrote {} of {} frames to output file", num_frames_written, num_frames);
 
   m_num_frames += num_frames_written;
 }
@@ -114,5 +114,3 @@ bool WAVWriter::WriteHeader()
 
   return (std::fwrite(&header, sizeof(header), 1, m_file) == 1);
 }
-
-} // namespace Common

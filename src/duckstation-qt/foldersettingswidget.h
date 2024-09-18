@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -7,14 +7,14 @@
 
 #include "ui_foldersettingswidget.h"
 
-class SettingsDialog;
+class SettingsWindow;
 
 class FolderSettingsWidget : public QWidget
 {
   Q_OBJECT
 
 public:
-  FolderSettingsWidget(SettingsDialog* dialog, QWidget* parent);
+  FolderSettingsWidget(SettingsWindow* dialog, QWidget* parent);
   ~FolderSettingsWidget();
 
 private:

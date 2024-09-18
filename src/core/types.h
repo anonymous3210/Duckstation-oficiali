@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 #include "common/types.h"
@@ -21,6 +21,7 @@ enum class MemoryAccessSize : u32
 };
 
 using TickCount = s32;
+using GlobalTicks = u64;
 
 enum class ConsoleRegion
 {
@@ -46,6 +47,7 @@ enum class CPUExecutionMode : u8
   Interpreter,
   CachedInterpreter,
   Recompiler,
+  NewRec,
   Count
 };
 
@@ -58,6 +60,7 @@ enum class PGXPMode : u8
 
 enum class GPURenderer : u8
 {
+  Automatic,
 #ifdef _WIN32
   HardwareD3D11,
   HardwareD3D12,
@@ -65,13 +68,23 @@ enum class GPURenderer : u8
 #ifdef __APPLE__
   HardwareMetal,
 #endif
-#ifdef WITH_VULKAN
+#ifdef ENABLE_VULKAN
   HardwareVulkan,
 #endif
-#ifdef WITH_OPENGL
+#ifdef ENABLE_OPENGL
   HardwareOpenGL,
 #endif
   Software,
+  Count
+};
+
+enum class DisplayDeinterlacingMode : u8
+{
+  Disabled,
+  Weave,
+  Blend,
+  Adaptive,
+  Progressive,
   Count
 };
 
@@ -103,6 +116,15 @@ enum class GPUWireframeMode : u8
   Count,
 };
 
+enum class GPULineDetectMode : u8
+{
+  Disabled,
+  Quads,
+  BasicTriangles,
+  AggressiveTriangles,
+  Count
+};
+
 enum class DisplayCropMode : u8
 {
   None,
@@ -132,32 +154,50 @@ enum class DisplayAlignment : u8
   Count
 };
 
+enum class DisplayRotation : u8
+{
+  Normal,
+  Rotate90,
+  Rotate180,
+  Rotate270,
+  Count
+};
+
 enum class DisplayScalingMode : u8
 {
   Nearest,
-  BilinearSmooth,
   NearestInteger,
+  BilinearSmooth,
   BilinearSharp,
+  BilinearInteger,
   Count
 };
 
-enum class AudioBackend : u8
+enum class DisplayExclusiveFullscreenControl : u8
 {
-  Null,
-#ifdef WITH_CUBEB
-  Cubeb,
-#endif
-#ifdef _WIN32
-  XAudio2,
-#endif
-#ifdef __ANDROID__
-  AAudio,
-  OpenSLES,
-#endif
+  Automatic,
+  Disallowed,
+  Allowed,
   Count
 };
 
-enum class ControllerType
+enum class DisplayScreenshotMode : u8
+{
+  ScreenResolution,
+  InternalResolution,
+  UncorrectedInternalResolution,
+  Count
+};
+
+enum class DisplayScreenshotFormat : u8
+{
+  PNG,
+  JPEG,
+  WebP,
+  Count
+};
+
+enum class ControllerType : u8
 {
   None,
   DigitalController,
@@ -166,6 +206,8 @@ enum class ControllerType
   GunCon,
   PlayStationMouse,
   NeGcon,
+  NeGconRumble,
+  Justifier,
   Count
 };
 
@@ -195,7 +237,7 @@ enum : u32
   NUM_MULTITAPS = 2
 };
 
-enum class CPUFastmemMode
+enum class CPUFastmemMode : u8
 {
   Disabled,
   MMap,
@@ -203,8 +245,43 @@ enum class CPUFastmemMode
   Count
 };
 
-enum : size_t
+enum class CDROMMechaconVersion : u8
 {
-  HOST_PAGE_SIZE = 4096,
-  HOST_PAGE_OFFSET_MASK = HOST_PAGE_SIZE - 1,
+  VC0A,
+  VC0B,
+  VC1A,
+  VC1B,
+  VD1,
+  VC2,
+  VC1,
+  VC2J,
+  VC2A,
+  VC2B,
+  VC3A,
+  VC3B,
+  VC3C,
+
+  Count,
+};
+
+enum class SaveStateCompressionMode : u8
+{
+  Uncompressed,
+  DeflateLow,
+  DeflateDefault,
+  DeflateHigh,
+  ZstLow,
+  ZstDefault,
+  ZstHigh,
+
+  Count,
+};
+
+enum class ForceVideoTimingMode : u8
+{
+  Disabled,
+  NTSC,
+  PAL,
+  
+  Count,
 };

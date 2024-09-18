@@ -1,10 +1,13 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
+
 #include "common/bitfield.h"
+#include "common/bitutils.h"
 #include "common/progress_callback.h"
 #include "common/types.h"
+
 #include <array>
 #include <memory>
 #include <string>
@@ -27,11 +30,14 @@ public:
     DATA_SECTOR_SIZE = 2048,
     SECTOR_SYNC_SIZE = 12,
     SECTOR_HEADER_SIZE = 4,
+    MODE1_HEADER_SIZE = 4,
+    MODE2_HEADER_SIZE = 12,
     FRAMES_PER_SECOND = 75, // "sectors", or "timecode frames" (not "channel frames")
     SECONDS_PER_MINUTE = 60,
     FRAMES_PER_MINUTE = FRAMES_PER_SECOND * SECONDS_PER_MINUTE,
     SUBCHANNEL_BYTES_PER_FRAME = 12,
-    LEAD_OUT_SECTOR_COUNT = 6750
+    LEAD_OUT_SECTOR_COUNT = 6750,
+    ALL_SUBCODE_SIZE = 96,
   };
 
   enum : u8
@@ -39,14 +45,14 @@ public:
     LEAD_OUT_TRACK_NUMBER = 0xAA
   };
 
-  enum class ReadMode : u32
+  enum class ReadMode : u8
   {
     DataOnly,  // 2048 bytes per sector.
     RawSector, // 2352 bytes per sector.
     RawNoSync, // 2340 bytes per sector.
   };
 
-  enum class TrackMode : u32
+  enum class TrackMode : u8
   {
     Audio,        // 2352 bytes per sector
     Mode1,        // 2048 bytes per sector
@@ -56,6 +62,13 @@ public:
     Mode2Form2,   // 2324 bytes per sector
     Mode2FormMix, // 2332 bytes per sector
     Mode2Raw      // 2352 bytes per sector
+  };
+
+  enum class SubchannelMode : u8
+  {
+    None,           // no subcode data stored
+    RawInterleaved, // raw interleaved 96 bytes per sector
+    Raw,            // raw uninterleaved 96 bytes per sector
   };
 
   enum class PrecacheResult : u8
@@ -200,6 +213,7 @@ public:
     u32 first_index;
     u32 length;
     TrackMode mode;
+    SubchannelMode submode;
     SubChannelQ::Control control;
   };
 
@@ -214,12 +228,14 @@ public:
     LBA start_lba_in_track;
     u32 length;
     TrackMode mode;
+    SubchannelMode submode;
     SubChannelQ::Control control;
     bool is_pregap;
   };
 
   // Helper functions.
   static u32 GetBytesPerSector(TrackMode mode);
+  static void DeinterleaveSubcode(const u8* subcode_in, u8* subcode_out);
 
   /// Returns a list of physical CD-ROM devices, .first being the device path, .second being the device name.
   static std::vector<std::pair<std::string, std::string>> GetDeviceList();
@@ -295,7 +311,7 @@ public:
   virtual bool ReadSectorFromIndex(void* buffer, const Index& index, LBA lba_in_index) = 0;
 
   // Retrieve image metadata.
-  virtual std::string GetMetadata(const std::string_view& type) const;
+  virtual std::string GetMetadata(std::string_view type) const;
 
   // Returns true if this image type has sub-images (e.g. m3u).
   virtual bool HasSubImages() const;
@@ -310,11 +326,15 @@ public:
   virtual bool SwitchSubImage(u32 index, Error* error);
 
   // Retrieve sub-image metadata.
-  virtual std::string GetSubImageMetadata(u32 index, const std::string_view& type) const;
+  virtual std::string GetSubImageMetadata(u32 index, std::string_view type) const;
 
   // Returns true if the source supports precaching, which may be more optimal than an in-memory copy.
   virtual PrecacheResult Precache(ProgressCallback* progress = ProgressCallback::NullProgressCallback);
   virtual bool IsPrecached() const;
+
+  // Returns the size on disk of the image. This could be multiple files.
+  // If this function returns -1, it means the size could not be computed.
+  virtual s64 GetSizeOnDisk() const;
 
 protected:
   void ClearTOC();

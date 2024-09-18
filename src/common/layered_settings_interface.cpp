@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "layered_settings_interface.h"
 #include "common/assert.h"
@@ -9,7 +9,7 @@ LayeredSettingsInterface::LayeredSettingsInterface() = default;
 
 LayeredSettingsInterface::~LayeredSettingsInterface() = default;
 
-bool LayeredSettingsInterface::Save()
+bool LayeredSettingsInterface::Save(Error* error /* = nullptr */)
 {
   Panic("Attempting to save layered settings interface");
 }
@@ -17,6 +17,11 @@ bool LayeredSettingsInterface::Save()
 void LayeredSettingsInterface::Clear()
 {
   Panic("Attempting to clear layered settings interface");
+}
+
+bool LayeredSettingsInterface::IsEmpty()
+{
+  return false;
 }
 
 bool LayeredSettingsInterface::GetIntValue(const char* section, const char* key, s32* value) const
@@ -103,6 +108,20 @@ bool LayeredSettingsInterface::GetStringValue(const char* section, const char* k
   return false;
 }
 
+bool LayeredSettingsInterface::GetStringValue(const char* section, const char* key, SmallStringBase* value) const
+{
+  for (u32 layer = FIRST_LAYER; layer <= LAST_LAYER; layer++)
+  {
+    if (SettingsInterface* sif = m_layers[layer]; sif != nullptr)
+    {
+      if (sif->GetStringValue(section, key, value))
+        return true;
+    }
+  }
+
+  return false;
+}
+
 void LayeredSettingsInterface::SetIntValue(const char* section, const char* key, int value)
 {
   Panic("Attempt to call SetIntValue() on layered settings interface");
@@ -139,7 +158,7 @@ bool LayeredSettingsInterface::ContainsValue(const char* section, const char* ke
   {
     if (SettingsInterface* sif = m_layers[layer]; sif != nullptr)
     {
-      if (sif->ContainsValue(key, section))
+      if (sif->ContainsValue(section, key))
         return true;
     }
   }
@@ -154,6 +173,16 @@ void LayeredSettingsInterface::DeleteValue(const char* section, const char* key)
 void LayeredSettingsInterface::ClearSection(const char* section)
 {
   Panic("Attempt to call ClearSection() on layered settings interface");
+}
+
+void LayeredSettingsInterface::RemoveSection(const char* section)
+{
+  Panic("Attempt to call RemoveSection() on layered settings interface");
+}
+
+void LayeredSettingsInterface::RemoveEmptySections()
+{
+  Panic("Attempt to call RemoveEmptySections() on layered settings interface");
 }
 
 std::vector<std::string> LayeredSettingsInterface::GetStringList(const char* section, const char* key) const

@@ -2,38 +2,11 @@
 #define RC_API_REQUEST_H
 
 #include "rc_error.h"
+#include "rc_util.h"
 
 #include <stddef.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/**
- * A block of memory for variable length data (like strings and arrays).
- */
-typedef struct rc_api_buffer_chunk_t {
-  /* The current location where data is being written */
-  char* write;
-  /* The first byte past the end of data where writing cannot occur */
-  char* end;
-  /* The first byte of the data */
-  char* start;
-  /* The next block in the allocated memory chain */
-  struct rc_api_buffer_chunk_t* next;
-}
-rc_api_buffer_chunk_t;
-
-/**
- * A preallocated block of memory for variable length data (like strings and arrays).
- */
-typedef struct rc_api_buffer_t {
-  /* The chunk data (will point at the local data member) */
-  struct rc_api_buffer_chunk_t chunk;
-  /* Small chunk of memory pre-allocated for the chunk */
-  char data[256];
-}
-rc_api_buffer_t;
+RC_BEGIN_C_DECLS
 
 /**
  * A constructed request to send to the retroachievements server.
@@ -47,7 +20,7 @@ typedef struct rc_api_request_t {
   const char* content_type;
 
   /* Storage for the url and post_data */
-  rc_api_buffer_t buffer;
+  rc_buffer_t buffer;
 }
 rc_api_request_t;
 
@@ -59,16 +32,18 @@ typedef struct rc_api_response_t {
   int succeeded;
   /* Server-provided message associated to the failure */
   const char* error_message;
+  /* Server-provided error code associated to the failure */
+  const char* error_code;
 
   /* Storage for the response data */
-  rc_api_buffer_t buffer;
+  rc_buffer_t buffer;
 }
 rc_api_response_t;
 
-void rc_api_destroy_request(rc_api_request_t* request);
+RC_EXPORT void RC_CCONV rc_api_destroy_request(rc_api_request_t* request);
 
-void rc_api_set_host(const char* hostname);
-void rc_api_set_image_host(const char* hostname);
+RC_EXPORT void RC_CCONV rc_api_set_host(const char* hostname);
+RC_EXPORT void RC_CCONV rc_api_set_image_host(const char* hostname);
 
 typedef struct rc_api_server_response_t {
   /* Pointer to the data returned from the server */
@@ -79,8 +54,11 @@ typedef struct rc_api_server_response_t {
   int http_status_code;
 } rc_api_server_response_t;
 
-#ifdef __cplusplus
-}
-#endif
+enum {
+  RC_API_SERVER_RESPONSE_CLIENT_ERROR = -1,
+  RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR = -2
+};
+
+RC_END_C_DECLS
 
 #endif /* RC_API_REQUEST_H */

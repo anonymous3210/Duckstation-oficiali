@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -7,20 +7,23 @@
 
 #include "ui_emulationsettingswidget.h"
 
-class SettingsDialog;
+class SettingsWindow;
 
 class EmulationSettingsWidget : public QWidget
 {
   Q_OBJECT
 
 public:
-  explicit EmulationSettingsWidget(SettingsDialog* dialog, QWidget* parent);
+  explicit EmulationSettingsWidget(SettingsWindow* dialog, QWidget* parent);
   ~EmulationSettingsWidget();
 
 private Q_SLOTS:
   void onEmulationSpeedIndexChanged(int index);
   void onFastForwardSpeedIndexChanged(int index);
   void onTurboSpeedIndexChanged(int index);
+  void onOptimalFramePacingChanged();
+  void onPreFrameSleepChanged();
+  void updateSkipDuplicateFramesEnabled();
   void updateRewind();
 
 private:
@@ -28,5 +31,5 @@ private:
 
   Ui::EmulationSettingsWidget m_ui;
 
-  SettingsDialog* m_dialog;
+  SettingsWindow* m_dialog;
 };

@@ -1,7 +1,9 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
+
+class Error;
 
 #define VK_NO_PROTOTYPES
 
@@ -15,18 +17,18 @@
 #elif defined(__ANDROID__)
 #define VK_USE_PLATFORM_ANDROID_KHR
 #else
-#ifdef USE_X11
+#ifdef ENABLE_X11
 #define VK_USE_PLATFORM_XLIB_KHR
 #endif
 
-#ifdef USE_WAYLAND
+#ifdef ENABLE_WAYLAND
 #define VK_USE_PLATFORM_WAYLAND_KHR
 #endif
 #endif
 
 #include "vulkan/vulkan.h"
 
-#if defined(USE_X11)
+#if defined(ENABLE_X11)
 
 // This breaks a bunch of our code. They shouldn't be #defines in the first place.
 #ifdef None
@@ -71,11 +73,16 @@
 #include "vulkan_entry_points.h"
 
 // We include vk_mem_alloc globally, so we don't accidentally include it before the vulkan header somewhere.
-#ifdef __clang__
+#if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wnullability-completeness"
 #pragma clang diagnostic ignored "-Wunused-variable"
 #pragma clang diagnostic ignored "-Wmissing-field-initializers"
+#pragma clang diagnostic ignored "-Wunused-function"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wunused-function"
 #elif defined(_MSC_VER)
 #pragma warning(push, 0)
 #endif
@@ -85,15 +92,17 @@
 #define VMA_STATS_STRING_ENABLED 0
 #include "vulkan/vk_mem_alloc.h"
 
-#ifdef __clang__
+#if defined(__clang__)
 #pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
 #elif defined(_MSC_VER)
 #pragma warning(pop)
 #endif
 
 namespace Vulkan {
 bool IsVulkanLibraryLoaded();
-bool LoadVulkanLibrary();
+bool LoadVulkanLibrary(Error* error);
 bool LoadVulkanInstanceFunctions(VkInstance instance);
 bool LoadVulkanDeviceFunctions(VkDevice device);
 void UnloadVulkanLibrary();

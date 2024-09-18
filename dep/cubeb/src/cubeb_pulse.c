@@ -804,10 +804,11 @@ pulse_destroy(cubeb * ctx)
   if (ctx->device_ids) {
     cubeb_strings_destroy(ctx->device_ids);
   }
-
+#ifndef DISABLE_LIBPULSE_DLOPEN
   if (ctx->libpulse) {
     dlclose(ctx->libpulse);
   }
+#endif
   free(ctx->default_sink_info);
   free(ctx);
 }
@@ -1024,7 +1025,7 @@ pulse_stream_init(cubeb * context, cubeb_stream ** stream,
     return CUBEB_ERROR;
   }
 
-  if (g_cubeb_log_level) {
+  if (cubeb_log_get_level()) {
     if (output_stream_params) {
       const pa_buffer_attr * output_att;
       output_att = WRAP(pa_stream_get_buffer_attr)(stm->output_stream);
@@ -1577,7 +1578,7 @@ pulse_subscribe_callback(pa_context * ctx, pa_subscription_event_type_t t,
   case PA_SUBSCRIPTION_EVENT_SOURCE:
   case PA_SUBSCRIPTION_EVENT_SINK:
 
-    if (g_cubeb_log_level) {
+    if (cubeb_log_get_level()) {
       if ((t & PA_SUBSCRIPTION_EVENT_FACILITY_MASK) ==
               PA_SUBSCRIPTION_EVENT_SOURCE &&
           (t & PA_SUBSCRIPTION_EVENT_TYPE_MASK) ==
@@ -1689,6 +1690,7 @@ static struct cubeb_ops const pulse_ops = {
     .get_max_channel_count = pulse_get_max_channel_count,
     .get_min_latency = pulse_get_min_latency,
     .get_preferred_sample_rate = pulse_get_preferred_sample_rate,
+    .get_supported_input_processing_params = NULL,
     .enumerate_devices = pulse_enumerate_devices,
     .device_collection_destroy = pulse_device_collection_destroy,
     .destroy = pulse_destroy,
@@ -1702,6 +1704,8 @@ static struct cubeb_ops const pulse_ops = {
     .stream_set_volume = pulse_stream_set_volume,
     .stream_set_name = pulse_stream_set_name,
     .stream_get_current_device = pulse_stream_get_current_device,
+    .stream_set_input_mute = NULL,
+    .stream_set_input_processing_params = NULL,
     .stream_device_destroy = pulse_stream_device_destroy,
     .stream_register_device_changed_callback = NULL,
     .register_device_collection_changed =

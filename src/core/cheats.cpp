@@ -1,32 +1,33 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com> and contributors.
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cheats.h"
 #include "bus.h"
-#include "common/assert.h"
-#include "common/byte_stream.h"
-#include "common/file_system.h"
-#include "common/log.h"
-#include "common/string.h"
-#include "common/string_util.h"
 #include "controller.h"
-#include "cpu_code_cache.h"
 #include "cpu_core.h"
 #include "host.h"
 #include "system.h"
+
+#include "common/file_system.h"
+#include "common/log.h"
+#include "common/small_string.h"
+#include "common/string_util.h"
+
 #include <cctype>
 #include <iomanip>
 #include <sstream>
 #include <type_traits>
+
 Log_SetChannel(Cheats);
+
 static std::array<u32, 256> cht_register; // Used for D7 ,51 & 52 cheat types
 
 using KeyValuePairVector = std::vector<std::pair<std::string, std::string>>;
 
 static bool IsValidScanAddress(PhysicalMemoryAddress address)
 {
-  if ((address & CPU::DCACHE_LOCATION_MASK) == CPU::DCACHE_LOCATION &&
-      (address & CPU::DCACHE_OFFSET_MASK) < CPU::DCACHE_SIZE)
+  if ((address & CPU::SCRATCHPAD_ADDR_MASK) == CPU::SCRATCHPAD_ADDR &&
+      (address & CPU::SCRATCHPAD_OFFSET_MASK) < CPU::SCRATCHPAD_SIZE)
   {
     return true;
   }
@@ -43,7 +44,7 @@ static bool IsValidScanAddress(PhysicalMemoryAddress address)
 }
 
 template<typename T>
-static T DoMemoryRead(VirtualMemoryAddress address)
+NEVER_INLINE static T DoMemoryRead(VirtualMemoryAddress address)
 {
   using UnsignedType = typename std::make_unsigned_t<T>;
   static_assert(std::is_same_v<UnsignedType, u8> || std::is_same_v<UnsignedType, u16> ||
@@ -59,7 +60,7 @@ static T DoMemoryRead(VirtualMemoryAddress address)
 }
 
 template<typename T>
-static void DoMemoryWrite(PhysicalMemoryAddress address, T value)
+NEVER_INLINE static void DoMemoryWrite(PhysicalMemoryAddress address, T value)
 {
   using UnsignedType = typename std::make_unsigned_t<T>;
   static_assert(std::is_same_v<UnsignedType, u8> || std::is_same_v<UnsignedType, u16> ||
@@ -73,7 +74,7 @@ static void DoMemoryWrite(PhysicalMemoryAddress address, T value)
     CPU::SafeWriteMemoryWord(address, value);
 }
 
-static u32 GetControllerButtonBits()
+NEVER_INLINE static u32 GetControllerButtonBits()
 {
   static constexpr std::array<u16, 16> button_mapping = {{
     0x0100, // Select
@@ -114,7 +115,7 @@ static u32 GetControllerButtonBits()
   return translated_bits;
 }
 
-static u32 GetControllerAnalogBits()
+NEVER_INLINE static u32 GetControllerAnalogBits()
 {
   // 0x010000 - Right Thumb Up
   // 0x020000 - Right Thumb Right
@@ -169,11 +170,6 @@ static u32 GetControllerAnalogBits()
 CheatList::CheatList() = default;
 
 CheatList::~CheatList() = default;
-
-static bool IsHexCharacter(char c)
-{
-  return (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f') || (c >= '0' && c <= '9');
-}
 
 static int SignedCharToInt(char ch)
 {
@@ -284,7 +280,7 @@ bool CheatList::LoadFromPCSXRString(const std::string& str)
       continue;
     }
 
-    while (!IsHexCharacter(*start) && start != end)
+    while (!StringUtil::IsHexDigit(*start) && start != end)
       start++;
     if (start == end)
       continue;
@@ -295,7 +291,7 @@ bool CheatList::LoadFromPCSXRString(const std::string& str)
     inst.second = 0;
     if (end_ptr)
     {
-      while (!IsHexCharacter(*end_ptr) && end_ptr != end)
+      while (!StringUtil::IsHexDigit(*end_ptr) && end_ptr != end)
         end_ptr++;
       if (end_ptr != end)
         inst.second = static_cast<u32>(std::strtoul(end_ptr, nullptr, 16));
@@ -311,7 +307,7 @@ bool CheatList::LoadFromPCSXRString(const std::string& str)
     m_codes.push_back(std::move(current_code));
   }
 
-  Log_InfoPrintf("Loaded %zu cheats (PCSXR format)", m_codes.size());
+  INFO_LOG("Loaded {} cheats (PCSXR format)", m_codes.size());
   return !m_codes.empty();
 }
 
@@ -397,12 +393,12 @@ bool CheatList::LoadFromLibretroString(const std::string& str)
 
   for (u32 i = 0; i < num_cheats; i++)
   {
-    const std::string* desc = FindKey(kvp, TinyString::FromFormat("cheat%u_desc", i));
-    const std::string* code = FindKey(kvp, TinyString::FromFormat("cheat%u_code", i));
-    const std::string* enable = FindKey(kvp, TinyString::FromFormat("cheat%u_enable", i));
+    const std::string* desc = FindKey(kvp, TinyString::from_format("cheat{}_desc", i));
+    const std::string* code = FindKey(kvp, TinyString::from_format("cheat{}_code", i));
+    const std::string* enable = FindKey(kvp, TinyString::from_format("cheat{}_enable", i));
     if (!desc || !code || !enable)
     {
-      Log_WarningPrintf("Missing desc/code/enable for cheat %u", i);
+      WARNING_LOG("Missing desc/code/enable for cheat {}", i);
       continue;
     }
 
@@ -414,7 +410,7 @@ bool CheatList::LoadFromLibretroString(const std::string& str)
       m_codes.push_back(std::move(cc));
   }
 
-  Log_InfoPrintf("Loaded %zu cheats (libretro format)", m_codes.size());
+  INFO_LOG("Loaded {} cheats (libretro format)", m_codes.size());
   return !m_codes.empty();
 }
 
@@ -479,7 +475,7 @@ bool CheatList::LoadFromEPSXeString(const std::string& str)
       continue;
     }
 
-    while (!IsHexCharacter(*start) && start != end)
+    while (!StringUtil::IsHexDigit(*start) && start != end)
       start++;
     if (start == end)
       continue;
@@ -490,7 +486,7 @@ bool CheatList::LoadFromEPSXeString(const std::string& str)
     inst.second = 0;
     if (end_ptr)
     {
-      while (!IsHexCharacter(*end_ptr) && end_ptr != end)
+      while (!StringUtil::IsHexDigit(*end_ptr) && end_ptr != end)
         end_ptr++;
       if (end_ptr != end)
         inst.second = static_cast<u32>(std::strtoul(end_ptr, nullptr, 16));
@@ -501,7 +497,7 @@ bool CheatList::LoadFromEPSXeString(const std::string& str)
   if (current_code.Valid())
     m_codes.push_back(std::move(current_code));
 
-  Log_InfoPrintf("Loaded %zu cheats (EPSXe format)", m_codes.size());
+  INFO_LOG("Loaded {} cheats (EPSXe format)", m_codes.size());
   return !m_codes.empty();
 }
 
@@ -523,7 +519,7 @@ bool CheatList::ParseLibretroCheat(CheatCode* cc, const char* line)
     {
       if (!IsLibretroSeparator(*end_ptr))
       {
-        Log_WarningPrintf("Malformed code '%s'", line);
+        WARNING_LOG("Malformed code '{}'", line);
         break;
       }
 
@@ -536,7 +532,7 @@ bool CheatList::ParseLibretroCheat(CheatCode* cc, const char* line)
       {
         if (!IsLibretroSeparator(*end_ptr))
         {
-          Log_WarningPrintf("Malformed code '%s'", line);
+          WARNING_LOG("Malformed code '{}'", line);
           break;
         }
 
@@ -621,7 +617,7 @@ CheatList::Format CheatList::DetectFileFormat(const std::string& str)
     if (start[0] == '#' || start[0] == ';')
       continue;
 
-    if (std::strncmp(line.data(), "cheats", 6) == 0)
+    if (line.starts_with("cheats"))
       return Format::Libretro;
 
     // pcsxr if we see brackets
@@ -629,7 +625,7 @@ CheatList::Format CheatList::DetectFileFormat(const std::string& str)
       return Format::PCSXR;
 
     // otherwise if it's a code, it's probably epsxe
-    if (std::isdigit(start[0]))
+    if (StringUtil::IsHexDigit(start[0]))
       return Format::EPSXe;
   }
 
@@ -660,8 +656,10 @@ bool CheatList::LoadFromString(const std::string& str, Format format)
     return LoadFromPCSXRString(str);
   else if (format == Format::Libretro)
     return LoadFromLibretroString(str);
-  format = Format::EPSXe;
-  return LoadFromEPSXeString(str);
+  else if (format == Format::EPSXe)
+    return LoadFromEPSXeString(str);
+  else
+    return false;
 }
 
 bool CheatList::SaveToPCSXRFile(const char* filename)
@@ -689,7 +687,7 @@ bool CheatList::SaveToPCSXRFile(const char* filename)
 
 bool CheatList::LoadFromPackage(const std::string& serial)
 {
-  const std::optional<std::string> db_string(Host::ReadResourceFileToString("chtdb.txt"));
+  const std::optional<std::string> db_string(Host::ReadResourceFileToString("chtdb.txt", false));
   if (!db_string.has_value())
     return false;
 
@@ -769,7 +767,7 @@ bool CheatList::LoadFromPackage(const std::string& serial)
         continue;
       }
 
-      while (!IsHexCharacter(*start) && start != end)
+      while (!StringUtil::IsHexDigit(*start) && start != end)
         start++;
       if (start == end)
         continue;
@@ -780,7 +778,7 @@ bool CheatList::LoadFromPackage(const std::string& serial)
       inst.second = 0;
       if (end_ptr)
       {
-        while (!IsHexCharacter(*end_ptr) && end_ptr != end)
+        while (!StringUtil::IsHexDigit(*end_ptr) && end_ptr != end)
           end_ptr++;
         if (end_ptr != end)
           inst.second = static_cast<u32>(std::strtoul(end_ptr, nullptr, 16));
@@ -791,11 +789,11 @@ bool CheatList::LoadFromPackage(const std::string& serial)
     if (current_code.Valid())
       m_codes.push_back(std::move(current_code));
 
-    Log_InfoPrintf("Loaded %zu codes from package for %s", m_codes.size(), serial.c_str());
+    INFO_LOG("Loaded {} codes from package for {}", m_codes.size(), serial);
     return !m_codes.empty();
   }
 
-  Log_WarningPrintf("No codes found in package for %s", serial.c_str());
+  WARNING_LOG("No codes found in package for {}", serial);
   return false;
 }
 
@@ -925,7 +923,7 @@ bool CheatCode::SetInstructionsFromString(const std::string& str)
     if (*start == '#' || *start == ';' || *start == '/' || *start == '\"')
       continue;
 
-    while (!IsHexCharacter(*start) && start != end)
+    while (!StringUtil::IsHexDigit(*start) && start != end)
       start++;
     if (start == end)
       continue;
@@ -936,7 +934,7 @@ bool CheatCode::SetInstructionsFromString(const std::string& str)
     inst.second = 0;
     if (end_ptr)
     {
-      while (!IsHexCharacter(*end_ptr) && end_ptr != end)
+      while (!StringUtil::IsHexDigit(*end_ptr) && end_ptr != end)
         end_ptr++;
       if (end_ptr != end)
         inst.second = static_cast<u32>(std::strtoul(end_ptr, nullptr, 16));
@@ -1076,14 +1074,14 @@ void CheatCode::Apply() const
 
       case InstructionCode::ScratchpadWrite16:
       {
-        DoMemoryWrite<u16>(CPU::DCACHE_LOCATION | (inst.address & CPU::DCACHE_OFFSET_MASK), inst.value16);
+        DoMemoryWrite<u16>(CPU::SCRATCHPAD_ADDR | (inst.address & CPU::SCRATCHPAD_OFFSET_MASK), inst.value16);
         index++;
       }
       break;
 
       case InstructionCode::ExtScratchpadWrite32:
       {
-        DoMemoryWrite<u32>(CPU::DCACHE_LOCATION | (inst.address & CPU::DCACHE_OFFSET_MASK), inst.value32);
+        DoMemoryWrite<u32>(CPU::SCRATCHPAD_ADDR | (inst.address & CPU::SCRATCHPAD_OFFSET_MASK), inst.value32);
         index++;
       }
       break;
@@ -1266,7 +1264,7 @@ void CheatCode::Apply() const
 
         if ((index + 4) >= instructions.size())
         {
-          Log_ErrorPrintf("Incomplete find/replace instruction");
+          ERROR_LOG("Incomplete find/replace instruction");
           return;
         }
         const Instruction& inst2 = instructions[index + 1];
@@ -1754,7 +1752,7 @@ void CheatCode::Apply() const
                       break;
                     }
                     default:
-                      Log_ErrorPrintf("Incorrect conditional instruction (see chtdb.txt for supported instructions)");
+                      ERROR_LOG("Incorrect conditional instruction (see chtdb.txt for supported instructions)");
                       return;
                   }
                 }
@@ -1866,14 +1864,14 @@ void CheatCode::Apply() const
                       break;
                     }
                     default:
-                      Log_ErrorPrintf("Incorrect conditional instruction (see chtdb.txt for supported instructions)");
+                      ERROR_LOG("Incorrect conditional instruction (see chtdb.txt for supported instructions)");
                       return;
                   }
                 }
               }
               else
               {
-                Log_ErrorPrintf("Incomplete multi conditional instruction");
+                ERROR_LOG("Incomplete multi conditional instruction");
                 return;
               }
               if (conditions_check == true)
@@ -2518,7 +2516,7 @@ void CheatCode::Apply() const
       {
         if ((index + 1) >= instructions.size())
         {
-          Log_ErrorPrintf("Incomplete slide instruction");
+          ERROR_LOG("Incomplete slide instruction");
           return;
         }
 
@@ -2550,7 +2548,7 @@ void CheatCode::Apply() const
         }
         else
         {
-          Log_ErrorPrintf("Invalid command in second slide parameter 0x%02X", static_cast<unsigned>(write_type));
+          ERROR_LOG("Invalid command in second slide parameter 0x{:02X}", static_cast<unsigned>(write_type));
         }
 
         index += 2;
@@ -2561,7 +2559,7 @@ void CheatCode::Apply() const
       {
         if ((index + 1) >= instructions.size())
         {
-          Log_ErrorPrintf("Incomplete slide instruction");
+          ERROR_LOG("Incomplete slide instruction");
           return;
         }
 
@@ -2622,7 +2620,7 @@ void CheatCode::Apply() const
         }
         else
         {
-          Log_ErrorPrintf("Invalid command in second slide parameter 0x%02X", static_cast<unsigned>(write_type));
+          ERROR_LOG("Invalid command in second slide parameter 0x{:02X}", static_cast<unsigned>(write_type));
         }
 
         index += 2;
@@ -2633,7 +2631,7 @@ void CheatCode::Apply() const
       {
         if ((index + 1) >= instructions.size())
         {
-          Log_ErrorPrintf("Incomplete memory copy instruction");
+          ERROR_LOG("Incomplete memory copy instruction");
           return;
         }
 
@@ -2656,8 +2654,8 @@ void CheatCode::Apply() const
 
       default:
       {
-        Log_ErrorPrintf("Unhandled instruction code 0x%02X (%08X %08X)", static_cast<u8>(inst.code.GetValue()),
-                        inst.first, inst.second);
+        ERROR_LOG("Unhandled instruction code 0x{:02X} ({:08X} {:08X})", static_cast<u8>(inst.code.GetValue()),
+                  inst.first, inst.second);
         index++;
       }
       break;
@@ -2755,13 +2753,13 @@ void CheatCode::ApplyOnDisable() const
       }
       break;
 
-      default:
-      {
-        Log_ErrorPrintf("Unhandled instruction code 0x%02X (%08X %08X)", static_cast<u8>(inst.code.GetValue()),
-                        inst.first, inst.second);
-        index++;
-      }
-      break;
+        [[unlikely]] default:
+        {
+          ERROR_LOG("Unhandled instruction code 0x{:02X} ({:08X} {:08X})", static_cast<u8>(inst.code.GetValue()),
+                    inst.first, inst.second);
+          index++;
+        }
+        break;
     }
   }
 }
@@ -2781,7 +2779,7 @@ const char* CheatCode::GetTypeDisplayName(Type type)
 
 std::optional<CheatCode::Type> CheatCode::ParseTypeName(const char* str)
 {
-  for (u32 i = 0; i < static_cast<u32>(s_cheat_code_type_names.size()); i++)
+  for (size_t i = 0; i < s_cheat_code_type_names.size(); i++)
   {
     if (std::strcmp(s_cheat_code_type_names[i], str) == 0)
       return static_cast<Type>(i);

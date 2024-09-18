@@ -1,17 +1,16 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
-
-#include "common/assert.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
+#include <span>
 #include <type_traits>
 
-template<typename T, std::size_t SIZE>
+template<typename T, std::size_t SIZE, std::size_t ALIGNMENT = 0>
 class FixedHeapArray
 {
 public:
@@ -24,11 +23,11 @@ public:
   using const_pointer = const T*;
   using this_type = FixedHeapArray<T, SIZE>;
 
-  FixedHeapArray() { m_data = new T[SIZE]; }
+  FixedHeapArray() { allocate(); }
 
   FixedHeapArray(const this_type& copy)
   {
-    m_data = new T[SIZE];
+    allocate();
     std::copy(copy.cbegin(), copy.cend(), begin());
   }
 
@@ -38,7 +37,7 @@ public:
     move.m_data = nullptr;
   }
 
-  ~FixedHeapArray() { delete[] m_data; }
+  ~FixedHeapArray() { deallocate(); }
 
   size_type size() const { return SIZE; }
   size_type capacity() const { return SIZE; }
@@ -73,6 +72,9 @@ public:
 
   void swap(this_type& move) { std::swap(m_data, move.m_data); }
 
+  std::span<T, SIZE> span() { return std::span<T, SIZE>(m_data); }
+  std::span<const T, SIZE> cspan() const { return std::span<const T, SIZE>(m_data); }
+
   this_type& operator=(const this_type& rhs)
   {
     std::copy(begin(), end(), rhs.cbegin());
@@ -81,7 +83,7 @@ public:
 
   this_type& operator=(this_type&& move)
   {
-    delete[] m_data;
+    deallocate();
     m_data = move.m_data;
     move.m_data = nullptr;
     return *this;
@@ -107,6 +109,44 @@ public:
 #undef RELATIONAL_OPERATOR
 
 private:
+  void allocate()
+  {
+    if constexpr (ALIGNMENT > 0)
+    {
+#ifdef _MSC_VER
+      m_data = static_cast<T*>(_aligned_malloc(SIZE * sizeof(T), ALIGNMENT));
+      assert(m_data);
+      if (!m_data) [[unlikely]]
+        std::abort();
+#else
+      if (posix_memalign(reinterpret_cast<void**>(&m_data), ALIGNMENT, SIZE * sizeof(T)) != 0) [[unlikely]]
+        std::abort();
+#endif
+    }
+    else
+    {
+      m_data = static_cast<T*>(std::malloc(SIZE * sizeof(T)));
+      assert(m_data);
+      if (!m_data) [[unlikely]]
+        std::abort();
+    }
+  }
+  void deallocate()
+  {
+    if constexpr (ALIGNMENT > 0)
+    {
+#ifdef _MSC_VER
+      _aligned_free(m_data);
+#else
+      std::free(m_data);
+#endif
+    }
+    else
+    {
+      std::free(m_data);
+    }
+  }
+
   T* m_data;
 };
 
@@ -148,6 +188,19 @@ public:
     {
       internal_resize(count, nullptr, 0);
       std::memcpy(m_data, begin, sizeof(T) * count);
+    }
+    else
+    {
+      m_data = nullptr;
+      m_size = 0;
+    }
+  }
+  DynamicHeapArray(const std::span<const T> data)
+  {
+    if (!data.empty())
+    {
+      internal_resize(data.size(), nullptr, 0);
+      std::memcpy(m_data, data.data(), sizeof(T) * data.size());
     }
     else
     {
@@ -211,7 +264,11 @@ public:
 
   void fill(const_reference value) { std::fill(begin(), end(), value); }
 
-  void swap(this_type& move) { std::swap(m_data, move.m_data); }
+  void swap(this_type& rhs)
+  {
+    std::swap(m_data, rhs.m_data);
+    std::swap(m_size, rhs.m_size);
+  }
 
   void resize(size_t new_size) { internal_resize(new_size, m_data, m_size); }
 
@@ -221,6 +278,8 @@ public:
     m_data = nullptr;
     m_size = 0;
   }
+
+  void assign(const std::span<const T> data) { assign(data.data(), data.size()); }
 
   void assign(const T* begin, const T* end)
   {
@@ -274,6 +333,25 @@ public:
     move.m_size = 0;
   }
 
+  std::span<T> span() { return std::span<T>(m_data, m_size); }
+  std::span<const T> cspan() const { return std::span<const T>(m_data, m_size); }
+
+  std::span<T> span(size_t offset, size_t size = static_cast<size_t>(-1))
+  {
+    std::span<T> ret;
+    if (offset < m_size) [[likely]]
+      ret = std::span<T>(m_data + offset, std::min(m_size - offset, size));
+    return ret;
+  }
+
+  std::span<const T> cspan(size_t offset, size_t size = static_cast<size_t>(-1)) const
+  {
+    std::span<const T> ret;
+    if (offset < m_size) [[likely]]
+      ret = std::span<const T>(m_data + offset, std::min(m_size - offset, size));
+    return ret;
+  }
+
   this_type& operator=(const this_type& rhs)
   {
     assign(rhs);
@@ -313,25 +391,27 @@ private:
     if constexpr (alignment > 0)
     {
 #ifdef _MSC_VER
-      m_data = _aligned_realloc(prev_ptr, size, alignment);
-      if (!m_data)
-        Panic("Memory allocation failed.");
+      m_data = static_cast<T*>(_aligned_realloc(prev_ptr, size * sizeof(T), alignment));
+      assert(m_data);
+      if (!m_data) [[unlikely]]
+        std::abort();
 #else
-      if (posix_memalign(reinterpret_cast<void**>(&m_data), alignment, size) != 0)
-        Panic("Memory allocation failed.");
+      if (posix_memalign(reinterpret_cast<void**>(&m_data), alignment, size * sizeof(T)) != 0) [[unlikely]]
+        std::abort();
 
       if (prev_ptr)
       {
-        std::memcpy(m_data, prev_ptr, prev_size);
+        std::memcpy(m_data, prev_ptr, prev_size * sizeof(T));
         std::free(prev_ptr);
       }
 #endif
     }
     else
     {
-      m_data = static_cast<T*>(std::realloc(prev_ptr, size));
-      if (!m_data)
-        Panic("Memory allocation failed.");
+      m_data = static_cast<T*>(std::realloc(prev_ptr, size * sizeof(T)));
+      assert(m_data);
+      if (!m_data) [[unlikely]]
+        std::abort();
     }
 
     m_size = size;

@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -12,21 +12,21 @@ class QScrollArea;
 class QGridLayout;
 class QVBoxLayout;
 
-class ControllerSettingsDialog;
+class ControllerSettingsWindow;
 
 class HotkeySettingsWidget : public QWidget
 {
   Q_OBJECT
 
 public:
-  HotkeySettingsWidget(QWidget* parent, ControllerSettingsDialog* dialog);
+  HotkeySettingsWidget(QWidget* parent, ControllerSettingsWindow* dialog);
   ~HotkeySettingsWidget();
 
 private:
   void createUi();
   void createButtons();
 
-  ControllerSettingsDialog* m_dialog;
+  ControllerSettingsWindow* m_dialog;
   QScrollArea* m_scroll_area = nullptr;
   QWidget* m_container = nullptr;
   QVBoxLayout* m_layout = nullptr;

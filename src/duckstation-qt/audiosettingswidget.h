@@ -1,33 +1,50 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
-#include <QtWidgets/QWidget>
-
 #include "ui_audiosettingswidget.h"
 
-class SettingsDialog;
+#include "common/types.h"
+
+#include <QtWidgets/QWidget>
+
+enum class AudioBackend : u8;
+enum class AudioExpansionMode : u8;
+
+class SettingsWindow;
 
 class AudioSettingsWidget : public QWidget
 {
   Q_OBJECT
 
 public:
-  explicit AudioSettingsWidget(SettingsDialog* dialog, QWidget* parent);
+  AudioSettingsWidget(SettingsWindow* dialog, QWidget* parent);
   ~AudioSettingsWidget();
 
 private Q_SLOTS:
+  void onExpansionModeChanged();
+  void onStretchModeChanged();
+
   void updateDriverNames();
+  void updateDeviceNames();
   void updateLatencyLabel();
   void updateVolumeLabel();
-  void onMinimalOutputLatencyChecked(bool new_value);
+  void onMinimalOutputLatencyChecked(Qt::CheckState state);
   void onOutputVolumeChanged(int new_value);
   void onFastForwardVolumeChanged(int new_value);
   void onOutputMutedChanged(int new_state);
 
-private:
-  Ui::AudioSettingsWidget m_ui;
+  void onExpansionSettingsClicked();
+  void onStretchSettingsClicked();
 
-  SettingsDialog* m_dialog;
+private:
+  AudioBackend getEffectiveBackend() const;
+  AudioExpansionMode getEffectiveExpansionMode() const;
+  u32 getEffectiveExpansionBlockSize() const;
+  void resetVolume(bool fast_forward);
+
+  Ui::AudioSettingsWidget m_ui;
+  SettingsWindow* m_dialog;
+  u32 m_output_device_latency = 0;
 };

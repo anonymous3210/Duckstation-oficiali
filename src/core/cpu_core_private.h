@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 #include "bus.h"
 #include "cpu_core.h"
 
 namespace CPU {
+
+void SetPC(u32 new_pc);
 
 // exceptions
 void RaiseException(Exception excode);
@@ -25,7 +27,6 @@ ALWAYS_INLINE static void CheckForPendingInterrupt()
 }
 
 void DispatchInterrupt();
-void UpdateDebugDispatcherFlag();
 
 // icache stuff
 ALWAYS_INLINE static bool IsCachedAddress(VirtualMemoryAddress address)
@@ -66,7 +67,7 @@ ALWAYS_INLINE static bool CompareICacheTag(VirtualMemoryAddress address)
 TickCount GetInstructionReadTicks(VirtualMemoryAddress address);
 TickCount GetICacheFillTicks(VirtualMemoryAddress address);
 u32 FillICache(VirtualMemoryAddress address);
-void CheckAndUpdateICacheTags(u32 line_count, TickCount uncached_ticks);
+void CheckAndUpdateICacheTags(u32 line_count);
 
 ALWAYS_INLINE static Segment GetSegmentForAddress(VirtualMemoryAddress address)
 {
@@ -102,16 +103,11 @@ ALWAYS_INLINE static VirtualMemoryAddress PhysicalAddressToVirtual(PhysicalMemor
   return bases[static_cast<u32>(segment)] | address;
 }
 
-// defined in bus.cpp - memory access functions which return false if an exception was thrown.
-bool FetchInstruction();
-bool FetchInstructionForInterpreterFallback();
+Bus::MemoryReadHandler GetMemoryReadHandler(VirtualMemoryAddress address, MemoryAccessSize size);
+Bus::MemoryWriteHandler GetMemoryWriteHandler(VirtualMemoryAddress address, MemoryAccessSize size);
+
+// memory access functions which return false if an exception was thrown.
 bool SafeReadInstruction(VirtualMemoryAddress addr, u32* value);
-bool ReadMemoryByte(VirtualMemoryAddress addr, u8* value);
-bool ReadMemoryHalfWord(VirtualMemoryAddress addr, u16* value);
-bool ReadMemoryWord(VirtualMemoryAddress addr, u32* value);
-bool WriteMemoryByte(VirtualMemoryAddress addr, u32 value);
-bool WriteMemoryHalfWord(VirtualMemoryAddress addr, u32 value);
-bool WriteMemoryWord(VirtualMemoryAddress addr, u32 value);
 void* GetDirectReadMemoryPointer(VirtualMemoryAddress address, MemoryAccessSize size, TickCount* read_ticks);
 void* GetDirectWriteMemoryPointer(VirtualMemoryAddress address, MemoryAccessSize size);
 

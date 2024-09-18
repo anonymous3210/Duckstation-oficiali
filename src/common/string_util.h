@@ -1,14 +1,15 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
+
 #include "types.h"
 #include <charconv>
-#include <cstdarg>
 #include <cstddef>
 #include <cstring>
 #include <iomanip>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,10 +28,6 @@
 
 namespace StringUtil {
 
-/// Constructs a std::string from a format string.
-std::string StdStringFromFormat(const char* format, ...) printflike(1, 2);
-std::string StdStringFromFormatV(const char* format, std::va_list ap);
-
 /// Checks if a wildcard matches a search string.
 bool WildcardMatch(const char* subject, const char* mask, bool case_sensitive = true);
 
@@ -38,7 +35,10 @@ bool WildcardMatch(const char* subject, const char* mask, bool case_sensitive = 
 std::size_t Strlcpy(char* dst, const char* src, std::size_t size);
 
 /// Strlcpy from string_view.
-std::size_t Strlcpy(char* dst, const std::string_view& src, std::size_t size);
+std::size_t Strlcpy(char* dst, const std::string_view src, std::size_t size);
+
+/// Bounds checked version of strlen.
+std::size_t Strnlen(const char* str, std::size_t max_size);
 
 /// Platform-independent strcasecmp
 static inline int Strcasecmp(const char* s1, const char* s2)
@@ -60,9 +60,18 @@ static inline int Strncasecmp(const char* s1, const char* s2, std::size_t n)
 #endif
 }
 
+// Case-insensitive equality of string views.
+static inline bool EqualNoCase(std::string_view s1, std::string_view s2)
+{
+  if (s1.length() != s2.length())
+    return false;
+
+  return (Strncasecmp(s1.data(), s2.data(), s1.length()) == 0);
+}
+
 /// Wrapper around std::from_chars
 template<typename T, std::enable_if_t<std::is_integral<T>::value, bool> = true>
-inline std::optional<T> FromChars(const std::string_view& str, int base = 10)
+inline std::optional<T> FromChars(const std::string_view str, int base = 10)
 {
   T value;
 
@@ -73,7 +82,7 @@ inline std::optional<T> FromChars(const std::string_view& str, int base = 10)
   return value;
 }
 template<typename T, std::enable_if_t<std::is_integral<T>::value, bool> = true>
-inline std::optional<T> FromChars(const std::string_view& str, int base, std::string_view* endptr)
+inline std::optional<T> FromChars(const std::string_view str, int base, std::string_view* endptr)
 {
   T value;
 
@@ -93,7 +102,7 @@ inline std::optional<T> FromChars(const std::string_view& str, int base, std::st
 }
 
 template<typename T, std::enable_if_t<std::is_floating_point<T>::value, bool> = true>
-inline std::optional<T> FromChars(const std::string_view& str)
+inline std::optional<T> FromChars(const std::string_view str)
 {
   T value;
 
@@ -104,7 +113,7 @@ inline std::optional<T> FromChars(const std::string_view& str)
   return value;
 }
 template<typename T, std::enable_if_t<std::is_floating_point<T>::value, bool> = true>
-inline std::optional<T> FromChars(const std::string_view& str, std::string_view* endptr)
+inline std::optional<T> FromChars(const std::string_view str, std::string_view* endptr)
 {
   T value;
 
@@ -168,18 +177,18 @@ inline std::string ToChars(T value)
 
 /// Explicit override for booleans
 template<>
-inline std::optional<bool> FromChars(const std::string_view& str, int base)
+inline std::optional<bool> FromChars(const std::string_view str, int base)
 {
   if (Strncasecmp("true", str.data(), str.length()) == 0 || Strncasecmp("yes", str.data(), str.length()) == 0 ||
       Strncasecmp("on", str.data(), str.length()) == 0 || Strncasecmp("1", str.data(), str.length()) == 0 ||
-      Strncasecmp("enabled", str.data(), str.length()) == 0 || Strncasecmp("1", str.data(), str.length()) == 0)
+      Strncasecmp("enabled", str.data(), str.length()) == 0)
   {
     return true;
   }
 
   if (Strncasecmp("false", str.data(), str.length()) == 0 || Strncasecmp("no", str.data(), str.length()) == 0 ||
       Strncasecmp("off", str.data(), str.length()) == 0 || Strncasecmp("0", str.data(), str.length()) == 0 ||
-      Strncasecmp("disabled", str.data(), str.length()) == 0 || Strncasecmp("0", str.data(), str.length()) == 0)
+      Strncasecmp("disabled", str.data(), str.length()) == 0)
   {
     return false;
   }
@@ -194,26 +203,24 @@ inline std::string ToChars(bool value, int base)
 }
 
 /// Encode/decode hexadecimal byte buffers
-std::optional<std::vector<u8>> DecodeHex(const std::string_view& str);
+std::optional<std::vector<u8>> DecodeHex(const std::string_view str);
 std::string EncodeHex(const u8* data, int length);
 
-/// starts_with from C++20
-ALWAYS_INLINE static bool StartsWith(const std::string_view& str, const std::string_view& prefix)
+/// Returns true if the character is a hexadecimal digit.
+template<typename T>
+ALWAYS_INLINE static bool IsHexDigit(T ch)
 {
-  return (str.compare(0, prefix.length(), prefix) == 0);
-}
-ALWAYS_INLINE static bool EndsWith(const std::string_view& str, const std::string_view& suffix)
-{
-  const std::size_t suffix_length = suffix.length();
-  return (str.length() >= suffix_length && str.compare(str.length() - suffix_length, suffix_length, suffix) == 0);
+  return ((ch >= static_cast<T>('a') && ch <= static_cast<T>('f')) ||
+          (ch >= static_cast<T>('A') && ch <= static_cast<T>('F')) ||
+          (ch >= static_cast<T>('0') && ch <= static_cast<T>('9')));
 }
 
 /// StartsWith/EndsWith variants which aren't case sensitive.
-ALWAYS_INLINE static bool StartsWithNoCase(const std::string_view& str, const std::string_view& prefix)
+ALWAYS_INLINE static bool StartsWithNoCase(const std::string_view str, const std::string_view prefix)
 {
   return (!str.empty() && Strncasecmp(str.data(), prefix.data(), prefix.length()) == 0);
 }
-ALWAYS_INLINE static bool EndsWithNoCase(const std::string_view& str, const std::string_view& suffix)
+ALWAYS_INLINE static bool EndsWithNoCase(const std::string_view str, const std::string_view suffix)
 {
   const std::size_t suffix_length = suffix.length();
   return (str.length() >= suffix_length &&
@@ -221,12 +228,14 @@ ALWAYS_INLINE static bool EndsWithNoCase(const std::string_view& str, const std:
 }
 
 /// Strip whitespace from the start/end of the string.
-std::string_view StripWhitespace(const std::string_view& str);
+std::string_view StripWhitespace(const std::string_view str);
 void StripWhitespace(std::string* str);
 
 /// Splits a string based on a single character delimiter.
-std::vector<std::string_view> SplitString(const std::string_view& str, char delimiter, bool skip_empty = true);
-std::vector<std::string> SplitNewString(const std::string_view& str, char delimiter, bool skip_empty = true);
+[[nodiscard]] std::vector<std::string_view> SplitString(const std::string_view str, char delimiter,
+                                                        bool skip_empty = true);
+[[nodiscard]] std::vector<std::string> SplitNewString(const std::string_view str, char delimiter,
+                                                      bool skip_empty = true);
 
 /// Joins a string together using the specified delimiter.
 template<typename T>
@@ -242,7 +251,7 @@ static inline std::string JoinString(const T& start, const T& end, char delimite
   return ret;
 }
 template<typename T>
-static inline std::string JoinString(const T& start, const T& end, const std::string_view& delimiter)
+static inline std::string JoinString(const T& start, const T& end, const std::string_view delimiter)
 {
   std::string ret;
   for (auto it = start; it != end; ++it)
@@ -255,12 +264,17 @@ static inline std::string JoinString(const T& start, const T& end, const std::st
 }
 
 /// Replaces all instances of search in subject with replacement.
-std::string ReplaceAll(const std::string_view& subject, const std::string_view& search,
-                       const std::string_view& replacement);
-void ReplaceAll(std::string* subject, const std::string_view& search, const std::string_view& replacement);
+[[nodiscard]] std::string ReplaceAll(const std::string_view subject, const std::string_view search,
+                                     const std::string_view replacement);
+void ReplaceAll(std::string* subject, const std::string_view search, const std::string_view replacement);
+[[nodiscard]] std::string ReplaceAll(const std::string_view subject, const char search, const char replacement);
+void ReplaceAll(std::string* subject, const char search, const char replacement);
 
 /// Parses an assignment string (Key = Value) into its two components.
-bool ParseAssignmentString(const std::string_view& str, std::string_view* key, std::string_view* value);
+bool ParseAssignmentString(const std::string_view str, std::string_view* key, std::string_view* value);
+
+/// Unicode replacement character.
+static constexpr char32_t UNICODE_REPLACEMENT_CHARACTER = 0xFFFD;
 
 /// Appends a UTF-16/UTF-32 codepoint to a UTF-8 string.
 void EncodeAndAppendUTF8(std::string& s, char32_t ch);
@@ -268,8 +282,15 @@ void EncodeAndAppendUTF8(std::string& s, char32_t ch);
 /// Decodes UTF-8 to a single codepoint, updating the position parameter.
 /// Returns the number of bytes the codepoint took in the original string.
 size_t DecodeUTF8(const void* bytes, size_t length, char32_t* ch);
-size_t DecodeUTF8(const std::string_view& str, size_t offset, char32_t* ch);
+size_t DecodeUTF8(const std::string_view str, size_t offset, char32_t* ch);
 size_t DecodeUTF8(const std::string& str, size_t offset, char32_t* ch);
+
+// Replaces the end of a string with ellipsis if it exceeds the specified length.
+std::string Ellipsise(const std::string_view str, u32 max_length, const char* ellipsis = "...");
+void EllipsiseInPlace(std::string& str, u32 max_length, const char* ellipsis = "...");
+
+/// Searches for the specified byte pattern in the given memory span. Wildcards (i.e. ??) are supported.
+std::optional<size_t> BytePatternSearch(const std::span<const u8> bytes, const std::string_view pattern);
 
 /// Strided memcpy/memcmp.
 ALWAYS_INLINE static void StrideMemCpy(void* dst, std::size_t dst_stride, const void* src, std::size_t src_stride,
@@ -314,12 +335,12 @@ ALWAYS_INLINE static int StrideMemCmp(const void* p1, std::size_t p1_stride, con
 #ifdef _WIN32
 
 /// Converts the specified UTF-8 string to a wide string.
-std::wstring UTF8StringToWideString(const std::string_view& str);
-bool UTF8StringToWideString(std::wstring& dest, const std::string_view& str);
+std::wstring UTF8StringToWideString(const std::string_view str);
+bool UTF8StringToWideString(std::wstring& dest, const std::string_view str);
 
 /// Converts the specified wide string to a UTF-8 string.
-std::string WideStringToUTF8String(const std::wstring_view& str);
-bool WideStringToUTF8String(std::string& dest, const std::wstring_view& str);
+std::string WideStringToUTF8String(const std::wstring_view str);
+bool WideStringToUTF8String(std::string& dest, const std::wstring_view str);
 
 #endif
 

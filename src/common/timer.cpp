@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "timer.h"
 #include "types.h"
@@ -286,6 +286,39 @@ double Timer::GetTimeNanosecondsAndReset()
   const double ret = ConvertValueToNanoseconds(value - m_tvStartValue);
   m_tvStartValue = value;
   return ret;
+}
+
+bool Timer::ResetIfSecondsPassed(double s)
+{
+  const Value value = GetCurrentValue();
+  const double ret = ConvertValueToSeconds(value - m_tvStartValue);
+  if (ret < s)
+    return false;
+
+  m_tvStartValue = value;
+  return true;
+}
+
+bool Timer::ResetIfMillisecondsPassed(double s)
+{
+  const Value value = GetCurrentValue();
+  const double ret = ConvertValueToMilliseconds(value - m_tvStartValue);
+  if (ret < s)
+    return false;
+
+  m_tvStartValue = value;
+  return true;
+}
+
+bool Timer::ResetIfNanosecondsPassed(double s)
+{
+  const Value value = GetCurrentValue();
+  const double ret = ConvertValueToNanoseconds(value - m_tvStartValue);
+  if (ret < s)
+    return false;
+
+  m_tvStartValue = value;
+  return true;
 }
 
 void Timer::BusyWait(std::uint64_t ns)

@@ -1,19 +1,22 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "sio.h"
-#include "common/bitfield.h"
-#include "common/fifo_queue.h"
-#include "common/log.h"
 #include "controller.h"
-#include "interrupt_controller.h"
-#include "memory_card.h"
+
 #include "util/state_wrapper.h"
+
+#include "common/bitfield.h"
+#include "common/bitutils.h"
+#include "common/log.h"
+
 #include <array>
 #include <memory>
+
 Log_SetChannel(SIO);
 
 namespace SIO {
+namespace {
 
 union SIO_CTRL
 {
@@ -59,6 +62,7 @@ union SIO_MODE
   BitField<u16, u8, 5, 1> parity_type;
   BitField<u16, u8, 6, 2> stop_bit_length;
 };
+} // namespace
 
 static void SoftReset();
 
@@ -74,7 +78,9 @@ void SIO::Initialize()
   Reset();
 }
 
-void SIO::Shutdown() {}
+void SIO::Shutdown()
+{
+}
 
 void SIO::Reset()
 {
@@ -97,7 +103,7 @@ u32 SIO::ReadRegister(u32 offset)
   {
     case 0x00: // SIO_DATA
     {
-      Log_ErrorPrintf("Read SIO_DATA");
+      ERROR_LOG("Read SIO_DATA");
 
       const u8 value = 0xFF;
       return (ZeroExtend32(value) | (ZeroExtend32(value) << 8) | (ZeroExtend32(value) << 16) |
@@ -119,8 +125,8 @@ u32 SIO::ReadRegister(u32 offset)
     case 0x0E: // SIO_BAUD
       return ZeroExtend32(s_SIO_BAUD);
 
-    default:
-      Log_ErrorPrintf("Unknown register read: 0x%X", offset);
+    [[unlikely]] default:
+      ERROR_LOG("Unknown register read: 0x{:X}", offset);
       return UINT32_C(0xFFFFFFFF);
   }
 }
@@ -131,13 +137,13 @@ void SIO::WriteRegister(u32 offset, u32 value)
   {
     case 0x00: // SIO_DATA
     {
-      Log_WarningPrintf("SIO_DATA (W) <- 0x%02X", value);
+      WARNING_LOG("SIO_DATA (W) <- 0x{:02X}", value);
       return;
     }
 
     case 0x0A: // SIO_CTRL
     {
-      Log_DebugPrintf("SIO_CTRL <- 0x%04X", value);
+      DEBUG_LOG("SIO_CTRL <- 0x{:04X}", value);
 
       s_SIO_CTRL.bits = Truncate16(value);
       if (s_SIO_CTRL.RESET)
@@ -148,20 +154,20 @@ void SIO::WriteRegister(u32 offset, u32 value)
 
     case 0x08: // SIO_MODE
     {
-      Log_DebugPrintf("SIO_MODE <- 0x%08X", value);
+      DEBUG_LOG("SIO_MODE <- 0x{:08X}", value);
       s_SIO_MODE.bits = Truncate16(value);
       return;
     }
 
     case 0x0E:
     {
-      Log_DebugPrintf("SIO_BAUD <- 0x%08X", value);
+      DEBUG_LOG("SIO_BAUD <- 0x{:08X}", value);
       s_SIO_BAUD = Truncate16(value);
       return;
     }
 
     default:
-      Log_ErrorPrintf("Unknown register write: 0x%X <- 0x%08X", offset, value);
+      ERROR_LOG("Unknown register write: 0x{:X} <- 0x{:08X}", offset, value);
       return;
   }
 }

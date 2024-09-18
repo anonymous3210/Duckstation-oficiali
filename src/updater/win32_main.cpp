@@ -1,14 +1,17 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "updater.h"
 #include "win32_progress_callback.h"
 
 #include "common/file_system.h"
 #include "common/log.h"
+#include "common/path.h"
+#include "common/scoped_guard.h"
 #include "common/string_util.h"
 #include "common/windows_headers.h"
 
+#include <combaseapi.h>
 #include <shellapi.h>
 
 static void WaitForProcessToExit(int process_id)
@@ -24,6 +27,12 @@ static void WaitForProcessToExit(int process_id)
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nShowCmd)
 {
   Win32ProgressCallback progress;
+
+  const bool com_initialized = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+  const ScopedGuard com_guard = [com_initialized]() {
+    if (com_initialized)
+      CoUninitialize();
+  };
 
   int argc = 0;
   LPWSTR* argv = CommandLineToArgvW(lpCmdLine, &argc);
@@ -42,9 +51,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
   }
 
   const int parent_process_id = StringUtil::FromChars<int>(StringUtil::WideStringToUTF8String(argv[0])).value_or(0);
-  const std::string destination_directory = StringUtil::WideStringToUTF8String(argv[1]);
-  const std::string zip_path = StringUtil::WideStringToUTF8String(argv[2]);
-  const std::wstring program_to_launch(argv[3]);
+  std::string destination_directory = Path::ToNativePath(StringUtil::WideStringToUTF8String(argv[1]));
+  std::string staging_directory = Path::Combine(destination_directory, "UPDATE_STAGING");
+  std::string zip_path = Path::ToNativePath(StringUtil::WideStringToUTF8String(argv[2]));
+  std::wstring program_to_launch(argv[3]);
   LocalFree(argv);
 
   if (parent_process_id <= 0 || destination_directory.empty() || zip_path.empty() || program_to_launch.empty())
@@ -53,11 +63,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
     return 1;
   }
 
-  progress.SetFormattedStatusText("Waiting for parent process %d to exit...", parent_process_id);
+  Log::SetFileOutputParams(true, Path::Combine(destination_directory, "updater.log").c_str());
+
+  progress.FormatStatusText("Waiting for parent process {} to exit...", parent_process_id);
   WaitForProcessToExit(parent_process_id);
 
   Updater updater(&progress);
-  if (!updater.Initialize(destination_directory))
+  if (!updater.Initialize(std::move(staging_directory), std::move(destination_directory)))
   {
     progress.ModalError("Failed to initialize updater.");
     return 1;
@@ -65,7 +77,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 
   if (!updater.OpenUpdateZip(zip_path.c_str()))
   {
-    progress.DisplayFormattedModalError("Could not open update zip '%s'. Update not installed.", zip_path.c_str());
+    progress.FormatModalError("Could not open update zip '{}'. Update not installed.", zip_path);
     return 1;
   }
 
@@ -89,11 +101,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
   }
 
   updater.CleanupStagingDirectory();
+  updater.RemoveUpdateZip();
 
-  progress.ModalInformation("Update complete.");
-
-  progress.DisplayFormattedInformation("Launching '%s'...",
-                                       StringUtil::WideStringToUTF8String(program_to_launch).c_str());
-  ShellExecuteW(nullptr, L"open", program_to_launch.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  progress.FormatInformation("Launching '{}'...", StringUtil::WideStringToUTF8String(program_to_launch));
+  ShellExecuteW(nullptr, L"open", program_to_launch.c_str(), L"-updatecleanup", nullptr, SW_SHOWNORMAL);
   return 0;
 }

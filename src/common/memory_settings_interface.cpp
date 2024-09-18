@@ -1,22 +1,30 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "memory_settings_interface.h"
+
 #include "common/assert.h"
+#include "common/error.h"
 #include "common/string_util.h"
 
 MemorySettingsInterface::MemorySettingsInterface() = default;
 
 MemorySettingsInterface::~MemorySettingsInterface() = default;
 
-bool MemorySettingsInterface::Save()
+bool MemorySettingsInterface::Save(Error* error /* = nullptr */)
 {
+  Error::SetStringView(error, "Memory settings cannot be saved.");
   return false;
 }
 
 void MemorySettingsInterface::Clear()
 {
   m_sections.clear();
+}
+
+bool MemorySettingsInterface::IsEmpty()
+{
+  return m_sections.empty();
 }
 
 bool MemorySettingsInterface::GetIntValue(const char* section, const char* key, s32* value) const
@@ -123,6 +131,20 @@ bool MemorySettingsInterface::GetStringValue(const char* section, const char* ke
   return true;
 }
 
+bool MemorySettingsInterface::GetStringValue(const char* section, const char* key, SmallStringBase* value) const
+{
+  const auto sit = m_sections.find(section);
+  if (sit == m_sections.end())
+    return false;
+
+  const auto iter = sit->second.find(key);
+  if (iter == sit->second.end())
+    return false;
+
+  value->assign(iter->second);
+  return true;
+}
+
 void MemorySettingsInterface::SetIntValue(const char* section, const char* key, s32 value)
 {
   SetValue(section, key, std::to_string(value));
@@ -145,7 +167,7 @@ void MemorySettingsInterface::SetDoubleValue(const char* section, const char* ke
 
 void MemorySettingsInterface::SetBoolValue(const char* section, const char* key, bool value)
 {
-  SetValue(section, key, std::to_string(value));
+  SetValue(section, key, value ? "true" : "false");
 }
 
 void MemorySettingsInterface::SetStringValue(const char* section, const char* key, const char* value)
@@ -181,7 +203,7 @@ void MemorySettingsInterface::SetValue(const char* section, const char* key, std
     sit = m_sections.emplace(std::make_pair(std::string(section), KeyMap())).first;
 
   const auto range = sit->second.equal_range(key);
-  if (range.first == sit->second.end())
+  if (range.first == range.second)
   {
     sit->second.emplace(std::string(key), std::move(value));
     return;
@@ -297,4 +319,27 @@ void MemorySettingsInterface::ClearSection(const char* section)
     return;
 
   m_sections.erase(sit);
+}
+
+void MemorySettingsInterface::RemoveSection(const char* section)
+{
+  auto sit = m_sections.find(section);
+  if (sit == m_sections.end())
+    return;
+
+  m_sections.erase(sit);
+}
+
+void MemorySettingsInterface::RemoveEmptySections()
+{
+  for (auto sit = m_sections.begin(); sit != m_sections.end();)
+  {
+    if (sit->second.size() > 0)
+    {
+      ++sit;
+      continue;
+    }
+
+    sit = m_sections.erase(sit);
+  }
 }

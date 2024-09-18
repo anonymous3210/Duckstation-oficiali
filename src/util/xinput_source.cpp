@@ -1,22 +1,35 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "xinput_source.h"
+#include "input_manager.h"
+
 #include "common/assert.h"
 #include "common/log.h"
 #include "common/string_util.h"
-#include "core/host.h"
-#include "input_manager.h"
+
+#include "IconsPromptFont.h"
+#include "fmt/format.h"
+
 #include <cmath>
+
 Log_SetChannel(XInputSource);
 
-const char* XInputSource::s_axis_names[XInputSource::NUM_AXES] = {
+static const char* s_axis_names[XInputSource::NUM_AXES] = {
   "LeftX",        // AXIS_LEFTX
   "LeftY",        // AXIS_LEFTY
   "RightX",       // AXIS_RIGHTX
   "RightY",       // AXIS_RIGHTY
   "LeftTrigger",  // AXIS_TRIGGERLEFT
   "RightTrigger", // AXIS_TRIGGERRIGHT
+};
+static constexpr const char* s_axis_icons[][2] = {
+  {ICON_PF_LEFT_ANALOG_LEFT, ICON_PF_LEFT_ANALOG_RIGHT},   // AXIS_LEFTX
+  {ICON_PF_LEFT_ANALOG_UP, ICON_PF_LEFT_ANALOG_DOWN},      // AXIS_LEFTY
+  {ICON_PF_RIGHT_ANALOG_LEFT, ICON_PF_RIGHT_ANALOG_RIGHT}, // AXIS_RIGHTX
+  {ICON_PF_RIGHT_ANALOG_UP, ICON_PF_RIGHT_ANALOG_DOWN},    // AXIS_RIGHTY
+  {nullptr, ICON_PF_LEFT_TRIGGER_PULL},                    // AXIS_TRIGGERLEFT
+  {nullptr, ICON_PF_RIGHT_TRIGGER_PULL},                   // AXIS_TRIGGERRIGHT
 };
 static const GenericInputBinding s_xinput_generic_binding_axis_mapping[][2] = {
   {GenericInputBinding::LeftStickLeft, GenericInputBinding::LeftStickRight},   // AXIS_LEFTX
@@ -27,7 +40,7 @@ static const GenericInputBinding s_xinput_generic_binding_axis_mapping[][2] = {
   {GenericInputBinding::Unknown, GenericInputBinding::R2},                     // AXIS_TRIGGERRIGHT
 };
 
-const char* XInputSource::s_button_names[XInputSource::NUM_BUTTONS] = {
+static const char* s_button_names[XInputSource::NUM_BUTTONS] = {
   "DPadUp",        // XINPUT_GAMEPAD_DPAD_UP
   "DPadDown",      // XINPUT_GAMEPAD_DPAD_DOWN
   "DPadLeft",      // XINPUT_GAMEPAD_DPAD_LEFT
@@ -44,7 +57,7 @@ const char* XInputSource::s_button_names[XInputSource::NUM_BUTTONS] = {
   "Y",             // XINPUT_GAMEPAD_Y
   "Guide",         // XINPUT_GAMEPAD_GUIDE
 };
-const u16 XInputSource::s_button_masks[XInputSource::NUM_BUTTONS] = {
+static const u16 s_button_masks[XInputSource::NUM_BUTTONS] = {
   XINPUT_GAMEPAD_DPAD_UP,
   XINPUT_GAMEPAD_DPAD_DOWN,
   XINPUT_GAMEPAD_DPAD_LEFT,
@@ -60,6 +73,23 @@ const u16 XInputSource::s_button_masks[XInputSource::NUM_BUTTONS] = {
   XINPUT_GAMEPAD_X,
   XINPUT_GAMEPAD_Y,
   0x400, // XINPUT_GAMEPAD_GUIDE
+};
+static constexpr const char* s_button_icons[] = {
+  ICON_PF_XBOX_DPAD_UP,       // XINPUT_GAMEPAD_DPAD_UP
+  ICON_PF_XBOX_DPAD_DOWN,     // XINPUT_GAMEPAD_DPAD_DOWN
+  ICON_PF_XBOX_DPAD_LEFT,     // XINPUT_GAMEPAD_DPAD_LEFT
+  ICON_PF_XBOX_DPAD_RIGHT,    // XINPUT_GAMEPAD_DPAD_RIGHT
+  ICON_PF_BURGER_MENU,        // XINPUT_GAMEPAD_START
+  ICON_PF_SHARE_CAPTURE,      // XINPUT_GAMEPAD_BACK
+  ICON_PF_LEFT_ANALOG_CLICK,  // XINPUT_GAMEPAD_LEFT_THUMB
+  ICON_PF_RIGHT_ANALOG_CLICK, // XINPUT_GAMEPAD_RIGHT_THUMB
+  ICON_PF_LEFT_SHOULDER_LB,   // XINPUT_GAMEPAD_LEFT_SHOULDER
+  ICON_PF_RIGHT_SHOULDER_RB,  // XINPUT_GAMEPAD_RIGHT_SHOULDER
+  ICON_PF_BUTTON_A,           // XINPUT_GAMEPAD_A
+  ICON_PF_BUTTON_B,           // XINPUT_GAMEPAD_B
+  ICON_PF_BUTTON_X,           // XINPUT_GAMEPAD_X
+  ICON_PF_BUTTON_Y,           // XINPUT_GAMEPAD_Y
+  ICON_PF_XBOX,               // XINPUT_GAMEPAD_GUIDE
 };
 static const GenericInputBinding s_xinput_generic_binding_button_mapping[] = {
   GenericInputBinding::DPadUp,    // XINPUT_GAMEPAD_DPAD_UP
@@ -98,7 +128,7 @@ bool XInputSource::Initialize(SettingsInterface& si, std::unique_lock<std::mutex
   }
   if (!m_xinput_module)
   {
-    Log_ErrorPrintf("Failed to load XInput module.");
+    ERROR_LOG("Failed to load XInput module.");
     return false;
   }
 
@@ -117,7 +147,7 @@ bool XInputSource::Initialize(SettingsInterface& si, std::unique_lock<std::mutex
 
   if (!m_xinput_get_state || !m_xinput_set_state || !m_xinput_get_capabilities)
   {
-    Log_ErrorPrintf("Failed to get XInput function pointers.");
+    ERROR_LOG("Failed to get XInput function pointers.");
     return false;
   }
 
@@ -198,7 +228,7 @@ void XInputSource::PollEvents()
     else
     {
       if (result != ERROR_DEVICE_NOT_CONNECTED)
-        Log_WarningPrintf("XInputGetState(%u) failed: 0x%08X / 0x%08X", i, result, GetLastError());
+        WARNING_LOG("XInputGetState({}) failed: 0x{:08X} / 0x{:08X}", i, result, GetLastError());
 
       if (was_connected)
         HandleControllerDisconnection(i);
@@ -215,17 +245,15 @@ std::vector<std::pair<std::string, std::string>> XInputSource::EnumerateDevices(
     if (!m_controllers[i].connected)
       continue;
 
-    ret.emplace_back(StringUtil::StdStringFromFormat("XInput-%u", i),
-                     StringUtil::StdStringFromFormat("XInput Controller %u", i));
+    ret.emplace_back(fmt::format("XInput-{}", i), fmt::format("XInput Controller {}", i));
   }
 
   return ret;
 }
 
-std::optional<InputBindingKey> XInputSource::ParseKeyString(const std::string_view& device,
-                                                            const std::string_view& binding)
+std::optional<InputBindingKey> XInputSource::ParseKeyString(std::string_view device, std::string_view binding)
 {
-  if (!StringUtil::StartsWith(device, "XInput-") || binding.empty())
+  if (!device.starts_with("XInput-") || binding.empty())
     return std::nullopt;
 
   const std::optional<s32> player_id = StringUtil::FromChars<s32>(device.substr(7));
@@ -236,7 +264,7 @@ std::optional<InputBindingKey> XInputSource::ParseKeyString(const std::string_vi
   key.source_type = InputSourceType::XInput;
   key.source_index = static_cast<u32>(player_id.value());
 
-  if (StringUtil::EndsWith(binding, "Motor"))
+  if (binding.ends_with("Motor"))
   {
     key.source_subtype = InputSubclass::ControllerMotor;
     if (binding == "LargeMotor")
@@ -288,24 +316,48 @@ std::optional<InputBindingKey> XInputSource::ParseKeyString(const std::string_vi
   return std::nullopt;
 }
 
-std::string XInputSource::ConvertKeyToString(InputBindingKey key)
+TinyString XInputSource::ConvertKeyToString(InputBindingKey key)
 {
-  std::string ret;
+  TinyString ret;
 
   if (key.source_type == InputSourceType::XInput)
   {
     if (key.source_subtype == InputSubclass::ControllerAxis && key.data < std::size(s_axis_names))
     {
       const char modifier = key.modifier == InputModifier::Negate ? '-' : '+';
-      ret = StringUtil::StdStringFromFormat("XInput-%u/%c%s", key.source_index, modifier, s_axis_names[key.data]);
+      ret.format("XInput-{}/{}{}", static_cast<u32>(key.source_index), modifier, s_axis_names[key.data]);
     }
     else if (key.source_subtype == InputSubclass::ControllerButton && key.data < std::size(s_button_names))
     {
-      ret = StringUtil::StdStringFromFormat("XInput-%u/%s", key.source_index, s_button_names[key.data]);
+      ret.format("XInput-{}/{}", static_cast<u32>(key.source_index), s_button_names[key.data]);
     }
     else if (key.source_subtype == InputSubclass::ControllerMotor)
     {
-      ret = StringUtil::StdStringFromFormat("XInput-%u/%sMotor", key.source_index, key.data ? "Large" : "Small");
+      ret.format("XInput-{}/{}Motor", static_cast<u32>(key.source_index), key.data ? "Large" : "Small");
+    }
+  }
+
+  return ret;
+}
+
+TinyString XInputSource::ConvertKeyToIcon(InputBindingKey key)
+{
+  TinyString ret;
+
+  if (key.source_type == InputSourceType::SDL)
+  {
+    if (key.source_subtype == InputSubclass::ControllerAxis)
+    {
+      if (key.data < std::size(s_axis_icons) && key.modifier != InputModifier::FullAxis)
+      {
+        ret.format("XInput-{}  {}", static_cast<u32>(key.source_index),
+                   s_axis_icons[key.data][key.modifier == InputModifier::None]);
+      }
+    }
+    else if (key.source_subtype == InputSubclass::ControllerButton)
+    {
+      if (key.data < std::size(s_button_icons))
+        ret.format("XInput-{}  {}", static_cast<u32>(key.source_index), s_button_icons[key.data]);
     }
   }
 
@@ -332,9 +384,9 @@ std::vector<InputBindingKey> XInputSource::EnumerateMotors()
   return ret;
 }
 
-bool XInputSource::GetGenericBindingMapping(const std::string_view& device, GenericInputBindingMapping* mapping)
+bool XInputSource::GetGenericBindingMapping(std::string_view device, GenericInputBindingMapping* mapping)
 {
-  if (!StringUtil::StartsWith(device, "XInput-"))
+  if (!device.starts_with("XInput-"))
     return false;
 
   const std::optional<s32> player_id = StringUtil::FromChars<s32>(device.substr(7));
@@ -351,35 +403,33 @@ bool XInputSource::GetGenericBindingMapping(const std::string_view& device, Gene
     const GenericInputBinding negative = s_xinput_generic_binding_axis_mapping[i][0];
     const GenericInputBinding positive = s_xinput_generic_binding_axis_mapping[i][1];
     if (negative != GenericInputBinding::Unknown)
-      mapping->emplace_back(negative, StringUtil::StdStringFromFormat("XInput-%d/-%s", pid, s_axis_names[i]));
+      mapping->emplace_back(negative, fmt::format("XInput-{}/-{}", pid, s_axis_names[i]));
 
     if (positive != GenericInputBinding::Unknown)
-      mapping->emplace_back(positive, StringUtil::StdStringFromFormat("XInput-%d/+%s", pid, s_axis_names[i]));
+      mapping->emplace_back(positive, fmt::format("XInput-{}/+{}", pid, s_axis_names[i]));
   }
   for (u32 i = 0; i < std::size(s_xinput_generic_binding_button_mapping); i++)
   {
     const GenericInputBinding binding = s_xinput_generic_binding_button_mapping[i];
     if (binding != GenericInputBinding::Unknown)
-      mapping->emplace_back(binding, StringUtil::StdStringFromFormat("XInput-%d/%s", pid, s_button_names[i]));
+      mapping->emplace_back(binding, fmt::format("XInput-{}/{}", pid, s_button_names[i]));
   }
 
   if (m_controllers[pid].has_small_motor)
-    mapping->emplace_back(GenericInputBinding::SmallMotor,
-                          StringUtil::StdStringFromFormat("XInput-%d/SmallMotor", pid));
+    mapping->emplace_back(GenericInputBinding::SmallMotor, fmt::format("XInput-{}/SmallMotor", pid));
   if (m_controllers[pid].has_large_motor)
-    mapping->emplace_back(GenericInputBinding::LargeMotor,
-                          StringUtil::StdStringFromFormat("XInput-%d/LargeMotor", pid));
+    mapping->emplace_back(GenericInputBinding::LargeMotor, fmt::format("XInput-{}/LargeMotor", pid));
 
   return true;
 }
 
 void XInputSource::HandleControllerConnection(u32 index)
 {
-  Log_InfoPrintf("XInput controller %u connected.", index);
+  INFO_LOG("XInput controller {} connected.", index);
 
   XINPUT_CAPABILITIES caps = {};
   if (m_xinput_get_capabilities(index, 0, &caps) != ERROR_SUCCESS)
-    Log_WarningPrintf("Failed to get XInput capabilities for controller %u", index);
+    WARNING_LOG("Failed to get XInput capabilities for controller {}", index);
 
   ControllerData& cd = m_controllers[index];
   cd.connected = true;
@@ -387,14 +437,18 @@ void XInputSource::HandleControllerConnection(u32 index)
   cd.has_small_motor = caps.Vibration.wRightMotorSpeed != 0;
   cd.last_state = {};
 
-  InputManager::OnInputDeviceConnected(StringUtil::StdStringFromFormat("XInput-%u", index),
-                                       StringUtil::StdStringFromFormat("XInput Controller %u", index));
+  InputManager::OnInputDeviceConnected(fmt::format("XInput-{}", index), fmt::format("XInput Controller {}", index));
 }
 
 void XInputSource::HandleControllerDisconnection(u32 index)
 {
-  Log_InfoPrintf("XInput controller %u disconnected.", index);
-  InputManager::OnInputDeviceDisconnected(StringUtil::StdStringFromFormat("XInput-%u", index));
+  INFO_LOG("XInput controller {} disconnected.", index);
+
+  InputManager::OnInputDeviceDisconnected({{
+                                            .source_type = InputSourceType::XInput,
+                                            .source_index = index,
+                                          }},
+                                          fmt::format("XInput-{}", index));
   m_controllers[index] = {};
 }
 

@@ -1,21 +1,28 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "memory_card_image.h"
-#include "common/byte_stream.h"
+#include "gpu_types.h"
+#include "system.h"
+
+#include "util/shiftjis.h"
+#include "util/state_wrapper.h"
+
+#include "common/bitutils.h"
+#include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/path.h"
 #include "common/string_util.h"
-#include "system.h"
-#include "util/shiftjis.h"
-#include "util/state_wrapper.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <optional>
+
 Log_SetChannel(MemoryCard);
 
 namespace MemoryCardImage {
+namespace {
 
 #pragma pack(push, 1)
 
@@ -52,6 +59,8 @@ static_assert(sizeof(TitleFrame) == FRAME_SIZE);
 
 #pragma pack(pop)
 
+} // namespace
+
 static u8 GetChecksum(const u8* frame)
 {
   u8 checksum = frame[0];
@@ -77,74 +86,63 @@ const T* GetFramePtr(const DataArray& data, u32 block, u32 frame)
   return reinterpret_cast<const T*>(&data[(block * BLOCK_SIZE) + (frame * FRAME_SIZE)]);
 }
 
-static constexpr u32 RGBA5551ToRGBA8888(u16 color)
+static std::optional<u32> GetNextFreeBlock(const DataArray& data);
+static bool ImportCardMCD(DataArray* data, const char* filename, std::span<const u8> file_data, Error* error);
+static bool ImportCardGME(DataArray* data, const char* filename, std::span<const u8> file_data, Error* error);
+static bool ImportCardVGS(DataArray* data, const char* filename, std::span<const u8> file_data, Error* error);
+static bool ImportCardPSX(DataArray* data, const char* filename, std::span<const u8> file_data, Error* error);
+static bool ImportSaveWithDirectoryFrame(DataArray* data, const char* filename, const FILESYSTEM_STAT_DATA& sd,
+                                         Error* error);
+static bool ImportRawSave(DataArray* data, const char* filename, const FILESYSTEM_STAT_DATA& sd, Error* error);
+} // namespace MemoryCardImage
+
+bool MemoryCardImage::LoadFromFile(DataArray* data, const char* filename, Error* error)
 {
-  u8 r = Truncate8(color & 31);
-  u8 g = Truncate8((color >> 5) & 31);
-  u8 b = Truncate8((color >> 10) & 31);
-  u8 a = Truncate8((color >> 15) & 1);
-
-  // 00012345 -> 1234545
-  b = (b << 3) | (b & 0b111);
-  g = (g << 3) | (g & 0b111);
-  r = (r << 3) | (r & 0b111);
-  // a = a ? 255 : 0;
-  a = (color == 0) ? 0 : 255;
-
-  return ZeroExtend32(r) | (ZeroExtend32(g) << 8) | (ZeroExtend32(b) << 16) | (ZeroExtend32(a) << 24);
-}
-
-bool LoadFromFile(DataArray* data, const char* filename)
-{
-  FILESYSTEM_STAT_DATA sd;
-  if (!FileSystem::StatFile(filename, &sd) || sd.Size != DATA_SIZE)
+  FileSystem::ManagedCFilePtr fp = FileSystem::OpenManagedCFile(filename, "rb", error);
+  if (!fp)
     return false;
 
-  std::unique_ptr<ByteStream> stream = ByteStream::OpenFile(filename, BYTESTREAM_OPEN_READ | BYTESTREAM_OPEN_STREAMED);
-  if (!stream || stream->GetSize() != DATA_SIZE)
+  const s64 size = FileSystem::FSize64(fp.get());
+  if (size != static_cast<s64>(DATA_SIZE))
+  {
+    ERROR_LOG("Memory card {} is incorrect size (expected {} got {})", Path::GetFileName(filename),
+              static_cast<u32>(DATA_SIZE), size);
     return false;
+  }
 
-  const size_t num_read = stream->Read(data->data(), DATA_SIZE);
+  const size_t num_read = std::fread(data->data(), 1, DATA_SIZE, fp.get());
   if (num_read != DATA_SIZE)
   {
-    Log_ErrorPrintf("Only read %zu of %u sectors from '%s'", num_read / FRAME_SIZE, NUM_FRAMES, filename);
+    ERROR_LOG("Only read {} of {} sectors from '{}'", num_read / FRAME_SIZE, static_cast<u32>(NUM_FRAMES), filename);
     return false;
   }
 
-  Log_InfoPrintf("Loaded memory card from %s", filename);
+  VERBOSE_LOG("Loaded memory card from {}", filename);
   return true;
 }
 
-bool SaveToFile(const DataArray& data, const char* filename)
+bool MemoryCardImage::SaveToFile(const DataArray& data, const char* filename, Error* error)
 {
-  std::unique_ptr<ByteStream> stream =
-    ByteStream::OpenFile(filename, BYTESTREAM_OPEN_CREATE | BYTESTREAM_OPEN_TRUNCATE | BYTESTREAM_OPEN_WRITE |
-                                     BYTESTREAM_OPEN_ATOMIC_UPDATE | BYTESTREAM_OPEN_STREAMED);
-  if (!stream)
+  Error local_error;
+  if (!FileSystem::WriteAtomicRenamedFile(filename, data.data(), data.size(), error ? error : &local_error))
+    [[unlikely]]
   {
-    Log_ErrorPrintf("Failed to open '%s' for writing.", filename);
+    ERROR_LOG("Failed to save memory card '{}': {}", Path::GetFileName(filename),
+              (error ? error : &local_error)->GetDescription());
     return false;
   }
 
-  if (!stream->Write2(data.data(), DATA_SIZE) || !stream->Commit())
-  {
-    Log_ErrorPrintf("Failed to write sectors to '%s'", filename);
-    stream->Discard();
-    return false;
-  }
-
-  Log_InfoPrintf("Saved memory card to '%s'", filename);
   return true;
 }
 
-bool IsValid(const DataArray& data)
+bool MemoryCardImage::IsValid(const DataArray& data)
 {
   // TODO: Check checksum?
   const u8* fptr = GetFramePtr<u8>(data, 0, 0);
   return fptr[0] == 'M' && fptr[1] == 'C';
 }
 
-void Format(DataArray* data)
+void MemoryCardImage::Format(DataArray* data)
 {
   // fill everything with FF
   data->fill(u8(0xFF));
@@ -201,7 +199,7 @@ void Format(DataArray* data)
   std::memcpy(GetFramePtr<u8>(data, 0, 63), GetFramePtr<u8>(data, 0, 0), FRAME_SIZE);
 }
 
-static std::optional<u32> GetNextFreeBlock(const DataArray& data)
+std::optional<u32> MemoryCardImage::GetNextFreeBlock(const DataArray& data)
 {
   for (u32 dir_frame = 1; dir_frame < FRAMES_PER_BLOCK; dir_frame++)
   {
@@ -213,7 +211,7 @@ static std::optional<u32> GetNextFreeBlock(const DataArray& data)
   return std::nullopt;
 }
 
-u32 GetFreeBlockCount(const DataArray& data)
+u32 MemoryCardImage::GetFreeBlockCount(const DataArray& data)
 {
   u32 count = 0;
   for (u32 dir_frame = 1; dir_frame < FRAMES_PER_BLOCK; dir_frame++)
@@ -226,8 +224,11 @@ u32 GetFreeBlockCount(const DataArray& data)
   return count;
 }
 
-std::vector<FileInfo> EnumerateFiles(const DataArray& data, bool include_deleted)
+std::vector<MemoryCardImage::FileInfo> MemoryCardImage::EnumerateFiles(const DataArray& data, bool include_deleted)
 {
+  // For getting the icon, we only consider binary transparency. Some games set the alpha to 0.
+  static constexpr auto icon_to_rgba8 = [](u16 col) { return (col == 0) ? 0u : VRAMRGBA5551ToRGBA8888(col | 0x8000); };
+
   std::vector<FileInfo> files;
 
   for (u32 dir_frame = 1; dir_frame < FRAMES_PER_BLOCK; dir_frame++)
@@ -261,7 +262,7 @@ std::vector<FileInfo> EnumerateFiles(const DataArray& data, bool include_deleted
     if (fi.num_blocks == FRAMES_PER_BLOCK)
     {
       // invalid
-      Log_WarningPrintf("Invalid block chain in block %u", dir_frame);
+      WARNING_LOG("Invalid block chain in block {}", dir_frame);
       continue;
     }
 
@@ -275,7 +276,7 @@ std::vector<FileInfo> EnumerateFiles(const DataArray& data, bool include_deleted
       num_icon_frames = 3;
     else
     {
-      Log_WarningPrintf("Unknown icon flag 0x%02X", tf->icon_flag);
+      WARNING_LOG("Unknown icon flag 0x{:02X}", tf->icon_flag);
       continue;
     }
 
@@ -294,8 +295,8 @@ std::vector<FileInfo> EnumerateFiles(const DataArray& data, bool include_deleted
       u32* pixels_ptr = fi.icon_frames[icon_frame].pixels;
       for (u32 i = 0; i < ICON_WIDTH * ICON_HEIGHT; i += 2)
       {
-        *(pixels_ptr++) = RGBA5551ToRGBA8888(tf->icon_palette[*indices_ptr & 0xF]);
-        *(pixels_ptr++) = RGBA5551ToRGBA8888(tf->icon_palette[*indices_ptr >> 4]);
+        *(pixels_ptr++) = icon_to_rgba8(tf->icon_palette[*indices_ptr & 0xF]);
+        *(pixels_ptr++) = icon_to_rgba8(tf->icon_palette[*indices_ptr >> 4]);
         indices_ptr++;
       }
     }
@@ -306,7 +307,7 @@ std::vector<FileInfo> EnumerateFiles(const DataArray& data, bool include_deleted
   return files;
 }
 
-bool ReadFile(const DataArray& data, const FileInfo& fi, std::vector<u8>* buffer)
+bool MemoryCardImage::ReadFile(const DataArray& data, const FileInfo& fi, std::vector<u8>* buffer, Error* error)
 {
   buffer->resize(fi.num_blocks * BLOCK_SIZE);
 
@@ -323,18 +324,20 @@ bool ReadFile(const DataArray& data, const FileInfo& fi, std::vector<u8>* buffer
   return true;
 }
 
-bool WriteFile(DataArray* data, const std::string_view& filename, const std::vector<u8>& buffer)
+bool MemoryCardImage::WriteFile(DataArray* data, std::string_view filename, const std::span<const u8> buffer, Error* error)
 {
   if (buffer.empty())
   {
-    Log_ErrorPrintf("Failed to write file to memory card: buffer is empty");
+    Error::SetStringView(error, "Buffer is empty.");
     return false;
   }
 
+  const u32 free_block_count = GetFreeBlockCount(*data);
   const u32 num_blocks = (static_cast<u32>(buffer.size()) + (BLOCK_SIZE - 1)) / BLOCK_SIZE;
-  if (GetFreeBlockCount(*data) < num_blocks)
+  if (free_block_count < num_blocks)
   {
-    Log_ErrorPrintf("Failed to write file to memory card: insufficient free blocks");
+    Error::SetStringFmt(error, "Insufficient free blocks, {} blocks are needed, but only have {}.", num_blocks,
+                        free_block_count);
     return false;
   }
 
@@ -377,13 +380,13 @@ bool WriteFile(DataArray* data, const std::string_view& filename, const std::vec
       std::memset(data_block + size_to_copy, 0, size_to_zero);
   }
 
-  Log_InfoPrintf("Wrote %zu byte (%u block) file to memory card", buffer.size(), num_blocks);
+  INFO_LOG("Wrote {} byte ({} block) file to memory card", buffer.size(), num_blocks);
   return true;
 }
 
-bool DeleteFile(DataArray* data, const FileInfo& fi, bool clear_sectors)
+bool MemoryCardImage::DeleteFile(DataArray* data, const FileInfo& fi, bool clear_sectors)
 {
-  Log_InfoPrintf("Deleting '%s' from memory card (%u blocks)", fi.filename.c_str(), fi.num_blocks);
+  INFO_LOG("Deleting '{}' from memory card ({} blocks)", fi.filename, fi.num_blocks);
 
   u32 block_number = fi.first_block;
   for (u32 i = 0; i < fi.num_blocks && (block_number > 0 && block_number < NUM_BLOCKS); i++)
@@ -412,15 +415,15 @@ bool DeleteFile(DataArray* data, const FileInfo& fi, bool clear_sectors)
   return true;
 }
 
-bool UndeleteFile(DataArray* data, const FileInfo& fi)
+bool MemoryCardImage::UndeleteFile(DataArray* data, const FileInfo& fi)
 {
   if (!fi.deleted)
   {
-    Log_ErrorPrintf("File '%s' is not deleted", fi.filename.c_str());
+    ERROR_LOG("File '{}' is not deleted", fi.filename);
     return false;
   }
 
-  Log_InfoPrintf("Undeleting '%s' from memory card (%u blocks)", fi.filename.c_str(), fi.num_blocks);
+  INFO_LOG("Undeleting '{}' from memory card ({} blocks)", fi.filename, fi.num_blocks);
 
   // check that all blocks are present first
   u32 block_number = fi.first_block;
@@ -434,8 +437,8 @@ bool UndeleteFile(DataArray* data, const FileInfo& fi)
     {
       if (df->block_allocation_state != 0xA1)
       {
-        Log_ErrorPrintf("Incorrect block state for %u, expected 0xA1 got 0x%02X", this_block_number,
-                        df->block_allocation_state);
+        ERROR_LOG("Incorrect block state for {}, expected 0xA1 got 0x{:02X}", this_block_number,
+                  df->block_allocation_state);
         return false;
       }
     }
@@ -443,8 +446,8 @@ bool UndeleteFile(DataArray* data, const FileInfo& fi)
     {
       if (df->block_allocation_state != 0xA3)
       {
-        Log_ErrorPrintf("Incorrect block state for %u, expected 0xA3 got 0x%02X", this_block_number,
-                        df->block_allocation_state);
+        ERROR_LOG("Incorrect block state for {}, expected 0xA3 got 0x{:02X}", this_block_number,
+                  df->block_allocation_state);
         return false;
       }
     }
@@ -452,8 +455,8 @@ bool UndeleteFile(DataArray* data, const FileInfo& fi)
     {
       if (df->block_allocation_state != 0xA2)
       {
-        Log_WarningPrintf("Incorrect block state for %u, expected 0xA2 got 0x%02X", this_block_number,
-                          df->block_allocation_state);
+        ERROR_LOG("Incorrect block state for {}, expected 0xA2 got 0x{:02X}", this_block_number,
+                  df->block_allocation_state);
         return false;
       }
     }
@@ -478,11 +481,12 @@ bool UndeleteFile(DataArray* data, const FileInfo& fi)
   return true;
 }
 
-static bool ImportCardMCD(DataArray* data, const char* filename, std::vector<u8> file_data)
+bool MemoryCardImage::ImportCardMCD(DataArray* data, const char* filename, std::span<const u8> file_data, Error* error)
 {
   if (file_data.size() != DATA_SIZE)
   {
-    Log_ErrorPrintf("Failed to import memory card from '%s': file is incorrect size.", filename);
+    Error::SetStringFmt(error, "File is incorrect size, expected {} bytes, got {} bytes.", static_cast<u32>(DATA_SIZE),
+                        file_data.size());
     return false;
   }
 
@@ -490,7 +494,7 @@ static bool ImportCardMCD(DataArray* data, const char* filename, std::vector<u8>
   return true;
 }
 
-static bool ImportCardGME(DataArray* data, const char* filename, std::vector<u8> file_data)
+bool MemoryCardImage::ImportCardGME(DataArray* data, const char* filename, std::span<const u8> file_data, Error* error)
 {
 #pragma pack(push, 1)
   struct GMEHeader
@@ -506,9 +510,16 @@ static bool ImportCardGME(DataArray* data, const char* filename, std::vector<u8>
   static_assert(sizeof(GMEHeader) == 0xF40);
 #pragma pack(pop)
 
-  if (file_data.size() < (sizeof(GMEHeader) + BLOCK_SIZE))
+  // some gme files are raw files in disguise...
+  if (file_data.size() == DATA_SIZE)
+    return ImportCardMCD(data, filename, std::move(file_data), error);
+
+  constexpr u32 MIN_SIZE = sizeof(GMEHeader) + BLOCK_SIZE;
+
+  if (file_data.size() < MIN_SIZE)
   {
-    Log_ErrorPrintf("Failed to import GME memory card from '%s': file is incorrect size.", filename);
+    Error::SetStringFmt(error, "File is incorrect size, expected at least {} bytes, got {} bytes.", MIN_SIZE,
+                        file_data.size());
     return false;
   }
 
@@ -516,30 +527,44 @@ static bool ImportCardGME(DataArray* data, const char* filename, std::vector<u8>
   const u32 expected_size = sizeof(GMEHeader) + DATA_SIZE;
   if (file_data.size() < expected_size)
   {
-    Log_WarningPrintf("GME memory card '%s' is too small (got %zu expected %u), padding with zeroes", filename,
-                      file_data.size(), expected_size);
-    file_data.resize(expected_size);
+    WARNING_LOG("GME memory card '{}' is too small (got {} expected {}), padding with zeroes", filename,
+                file_data.size(), expected_size);
+    if (file_data.size() > sizeof(GMEHeader))
+    {
+      const size_t present = file_data.size() - sizeof(GMEHeader);
+      std::memcpy(data->data(), file_data.data() + sizeof(GMEHeader), present);
+      std::memset(data->data() + present, 0, DATA_SIZE - present);
+    }
+    else
+    {
+      std::memset(data->data(), 0, DATA_SIZE);
+    }
+  }
+  else
+  {
+    // we don't actually care about the header, just skip over it
+    std::memcpy(data->data(), file_data.data() + sizeof(GMEHeader), DATA_SIZE);
   }
 
-  // we don't actually care about the header, just skip over it
-  std::memcpy(data->data(), file_data.data() + sizeof(GMEHeader), DATA_SIZE);
   return true;
 }
 
-static bool ImportCardVGS(DataArray* data, const char* filename, std::vector<u8> file_data)
+bool MemoryCardImage::ImportCardVGS(DataArray* data, const char* filename, std::span<const u8> file_data, Error* error)
 {
   constexpr u32 HEADER_SIZE = 64;
+  constexpr u32 EXPECTED_SIZE = HEADER_SIZE + DATA_SIZE;
 
-  if (file_data.size() != (HEADER_SIZE + DATA_SIZE))
+  if (file_data.size() != EXPECTED_SIZE)
   {
-    Log_ErrorPrintf("Failed to import memory card from '%s': file is incorrect size.", filename);
+    Error::SetStringFmt(error, "File is incorrect size, expected {} bytes, got {} bytes.", EXPECTED_SIZE,
+                        file_data.size());
     return false;
   }
 
   // Connectix Virtual Game Station format (.MEM): "VgsM", 64 bytes
   if (file_data[0] != 'V' || file_data[1] != 'g' || file_data[2] != 's' || file_data[3] != 'M')
   {
-    Log_ErrorPrintf("Failed to import memory card from '%s': incorrect header.", filename);
+    Error::SetStringView(error, "Incorrect header.");
     return false;
   }
 
@@ -547,20 +572,22 @@ static bool ImportCardVGS(DataArray* data, const char* filename, std::vector<u8>
   return true;
 }
 
-static bool ImportCardPSX(DataArray* data, const char* filename, std::vector<u8> file_data)
+bool MemoryCardImage::ImportCardPSX(DataArray* data, const char* filename, std::span<const u8> file_data, Error* error)
 {
   constexpr u32 HEADER_SIZE = 256;
+  constexpr u32 EXPECTED_SIZE = HEADER_SIZE + DATA_SIZE;
 
-  if (file_data.size() != (HEADER_SIZE + DATA_SIZE))
+  if (file_data.size() != EXPECTED_SIZE)
   {
-    Log_ErrorPrintf("Failed to import memory card from '%s': file is incorrect size.", filename);
+    Error::SetStringFmt(error, "File is incorrect size, expected {} bytes, got {} bytes.", EXPECTED_SIZE,
+                        file_data.size());
     return false;
   }
 
   // Connectix Virtual Game Station format (.MEM): "VgsM", 64 bytes
   if (file_data[0] != 'P' || file_data[1] != 'S' || file_data[2] != 'V')
   {
-    Log_ErrorPrintf("Failed to import memory card from '%s': incorrect header.", filename);
+    Error::SetStringView(error, "Incorrect header.");
     return false;
   }
 
@@ -568,124 +595,112 @@ static bool ImportCardPSX(DataArray* data, const char* filename, std::vector<u8>
   return true;
 }
 
-bool ImportCard(DataArray* data, const char* filename, std::vector<u8> file_data)
+bool MemoryCardImage::ImportCard(DataArray* data, const char* filename, std::span<const u8> file_data, Error* error)
 {
-  const char* extension = std::strrchr(filename, '.');
-  if (!extension)
+  const std::string_view extension = Path::GetExtension(filename);
+  if (extension.empty())
   {
-    Log_ErrorPrintf("Failed to import memory card from '%s': missing extension?", filename);
+    Error::SetStringFmt(error, "File must have an extension.");
     return false;
   }
 
-  if (StringUtil::Strcasecmp(extension, ".mcd") == 0 || StringUtil::Strcasecmp(extension, ".mcr") == 0 ||
-      StringUtil::Strcasecmp(extension, ".mc") == 0 || StringUtil::Strcasecmp(extension, ".srm") == 0 ||
-      StringUtil::Strcasecmp(extension, ".psm") == 0 || StringUtil::Strcasecmp(extension, ".ps") == 0 ||
-      StringUtil::Strcasecmp(extension, ".ddf") == 0)
+  if (StringUtil::EqualNoCase(extension, "mcd") || StringUtil::EqualNoCase(extension, "mcr") ||
+      StringUtil::EqualNoCase(extension, "mc") || StringUtil::EqualNoCase(extension, "srm") ||
+      StringUtil::EqualNoCase(extension, "psm") || StringUtil::EqualNoCase(extension, "ps") ||
+      StringUtil::EqualNoCase(extension, "ddf"))
   {
-    return ImportCardMCD(data, filename, std::move(file_data));
+    return ImportCardMCD(data, filename, file_data, error);
   }
-  else if (StringUtil::Strcasecmp(extension, ".gme") == 0)
+  else if (StringUtil::EqualNoCase(extension, "gme"))
   {
-    return ImportCardGME(data, filename, std::move(file_data));
+    return ImportCardGME(data, filename, file_data, error);
   }
-  else if (StringUtil::Strcasecmp(extension, ".mem") == 0 || StringUtil::Strcasecmp(extension, ".vgs") == 0)
+  else if (StringUtil::EqualNoCase(extension, "mem") || StringUtil::EqualNoCase(extension, "vgs"))
   {
-    return ImportCardVGS(data, filename, std::move(file_data));
+    return ImportCardVGS(data, filename, file_data, error);
   }
-  else if (StringUtil::Strcasecmp(extension, ".psx") == 0)
+  else if (StringUtil::EqualNoCase(extension, "psx"))
   {
-    return ImportCardPSX(data, filename, std::move(file_data));
+    return ImportCardPSX(data, filename, file_data, error);
   }
   else
   {
-    Log_ErrorPrintf("Failed to import memory card from '%s': unknown extension?", filename);
+    Error::SetStringFmt(error, "Unknown extension '{}'.", extension);
     return false;
   }
 }
 
-bool ImportCard(DataArray* data, const char* filename)
+bool MemoryCardImage::ImportCard(DataArray* data, const char* filename, Error* error)
 {
-  std::optional<std::vector<u8>> file_data = FileSystem::ReadBinaryFile(filename);
+  std::optional<DynamicHeapArray<u8>> file_data = FileSystem::ReadBinaryFile(filename, error);
   if (!file_data.has_value())
     return false;
 
-  return ImportCard(data, filename, std::move(file_data.value()));
+  return ImportCard(data, filename, file_data->cspan(), error);
 }
 
-bool ExportSave(DataArray* data, const FileInfo& fi, const char* filename)
+bool MemoryCardImage::ExportSave(DataArray* data, const FileInfo& fi, const char* filename, Error* error)
 {
-  std::unique_ptr<ByteStream> stream =
-    ByteStream::OpenFile(filename, BYTESTREAM_OPEN_CREATE | BYTESTREAM_OPEN_TRUNCATE | BYTESTREAM_OPEN_WRITE |
-                                     BYTESTREAM_OPEN_ATOMIC_UPDATE | BYTESTREAM_OPEN_STREAMED);
-  if (!stream)
-  {
-    Log_ErrorPrintf("Failed to open '%s' for writing.", filename);
+  // TODO: This could be span...
+  std::vector<u8> file_data;
+  if (!ReadFile(*data, fi, &file_data, error))
     return false;
-  }
+
+  auto fp = FileSystem::CreateAtomicRenamedFile(filename, error);
+  if (!fp)
+    return false;
 
   DirectoryFrame* df_ptr = GetFramePtr<DirectoryFrame>(data, 0, fi.first_block);
-  std::vector<u8> header = std::vector<u8>(static_cast<size_t>(FRAME_SIZE));
-  std::memcpy(header.data(), df_ptr, sizeof(*df_ptr));
-
-  std::vector<u8> blocks;
-  if (!ReadFile(*data, fi, &blocks))
+  if (std::fwrite(df_ptr, sizeof(DirectoryFrame), 1, fp.get()) != 1 ||
+      std::fwrite(file_data.data(), file_data.size(), 1, fp.get()) != 1)
   {
-    Log_ErrorPrintf("Failed to read save blocks from memory card data");
-    return false;
-  }
-
-  if (!stream->Write(header.data(), static_cast<u32>(header.size())) ||
-      !stream->Write(blocks.data(), static_cast<u32>(blocks.size())) || !stream->Commit())
-  {
-    Log_ErrorPrintf("Failed to write exported save to '%s'", filename);
-    stream->Discard();
+    Error::SetErrno(error, "fwrite() failed: ", errno);
+    FileSystem::DiscardAtomicRenamedFile(fp);
     return false;
   }
 
   return true;
 }
 
-static bool ImportSaveWithDirectoryFrame(DataArray* data, const char* filename, const FILESYSTEM_STAT_DATA& sd)
+bool MemoryCardImage::ImportSaveWithDirectoryFrame(DataArray* data, const char* filename,
+                                                   const FILESYSTEM_STAT_DATA& sd, Error* error)
 {
   // Make sure the size of the actual file is valid
   if (sd.Size <= FRAME_SIZE || (sd.Size - FRAME_SIZE) % BLOCK_SIZE != 0u || (sd.Size - FRAME_SIZE) / BLOCK_SIZE > 15u)
   {
-    Log_ErrorPrintf("Invalid size for save file '%s'", filename);
+    Error::SetStringView(error, "Invalid size for save file.");
     return false;
   }
 
-  std::unique_ptr<ByteStream> stream = ByteStream::OpenFile(filename, BYTESTREAM_OPEN_READ | BYTESTREAM_OPEN_STREAMED);
-  if (!stream)
-  {
-    Log_ErrorPrintf("Failed to open '%s' for reading", filename);
+  auto fp = FileSystem::OpenManagedCFile(filename, "rb", error);
+  if (!fp)
     return false;
-  }
 
   DirectoryFrame df;
-  if (stream->Read(&df, FRAME_SIZE) != FRAME_SIZE)
+  if (std::fread(&df, sizeof(df), 1, fp.get()) != 1)
   {
-    Log_ErrorPrintf("Failed to read directory frame from '%s'", filename);
+    Error::SetErrno(error, "Failed to read directory frame: ", errno);
     return false;
   }
 
   // Make sure the size reported by the directory frame is valid
   if (df.file_size < BLOCK_SIZE || df.file_size % BLOCK_SIZE != 0 || df.file_size / BLOCK_SIZE > 15u)
   {
-    Log_ErrorPrintf("Invalid size (%u bytes) reported by directory frame", df.file_size);
+    Error::SetStringFmt(error, "Invalid size ({} bytes) reported by directory frame.", df.file_size);
     return false;
   }
 
   std::vector<u8> blocks = std::vector<u8>(static_cast<size_t>(df.file_size));
-  if (stream->Read(blocks.data(), df.file_size) != df.file_size)
+  if (std::fread(blocks.data(), df.file_size, 1, fp.get()) != 1)
   {
-    Log_ErrorPrintf("Failed to read block bytes from '%s'", filename);
+    Error::SetErrno(error, "Failed to read block bytes: ", errno);
     return false;
   }
 
   const u32 num_blocks = (static_cast<u32>(blocks.size()) + (BLOCK_SIZE - 1)) / BLOCK_SIZE;
   if (GetFreeBlockCount(*data) < num_blocks)
   {
-    Log_ErrorPrintf("Failed to write file to memory card: insufficient free blocks");
+    Error::SetStringView(error, "Insufficient free blocks.");
     return false;
   }
 
@@ -697,7 +712,7 @@ static bool ImportSaveWithDirectoryFrame(DataArray* data, const char* filename, 
     {
       if (!fi.deleted)
       {
-        Log_ErrorPrintf("Save file with the same name '%s' already exists in memory card", fi.filename.c_str());
+        Error::SetStringFmt(error, "Save file with the same name '{}' already exists in memory card", fi.filename);
         return false;
       }
 
@@ -705,33 +720,32 @@ static bool ImportSaveWithDirectoryFrame(DataArray* data, const char* filename, 
     }
   }
 
-  return WriteFile(data, df.filename, blocks);
+  return WriteFile(data, df.filename, blocks, error);
 }
 
-static bool ImportRawSave(DataArray* data, const char* filename, const FILESYSTEM_STAT_DATA& sd)
+bool MemoryCardImage::ImportRawSave(DataArray* data, const char* filename, const FILESYSTEM_STAT_DATA& sd, Error* error)
 {
-  const std::string display_name(FileSystem::GetDisplayNameFromPath(filename));
+  const std::string display_name = FileSystem::GetDisplayNameFromPath(filename);
   std::string save_name(Path::GetFileTitle(filename));
   if (save_name.length() == 0)
   {
-    Log_ErrorPrintf("Invalid filename: '%s'", filename);
+    Error::SetStringView(error, "Invalid filename.");
     return false;
   }
 
   if (save_name.length() > DirectoryFrame::FILE_NAME_LENGTH)
     save_name.erase(DirectoryFrame::FILE_NAME_LENGTH);
 
-  std::optional<std::vector<u8>> blocks = FileSystem::ReadBinaryFile(filename);
+  std::optional<DynamicHeapArray<u8>> blocks = FileSystem::ReadBinaryFile(filename, error);
   if (!blocks.has_value())
-  {
-    Log_ErrorPrintf("Failed to read '%s'", filename);
     return false;
-  }
 
+  const u32 free_block_count = GetFreeBlockCount(*data);
   const u32 num_blocks = (static_cast<u32>(blocks->size()) + (BLOCK_SIZE - 1)) / BLOCK_SIZE;
-  if (GetFreeBlockCount(*data) < num_blocks)
+  if (free_block_count < num_blocks)
   {
-    Log_ErrorPrintf("Failed to write file to memory card: insufficient free blocks");
+    Error::SetStringFmt(error, "Insufficient free blocks, needs {} blocks, but only have {}.", num_blocks,
+                        free_block_count);
     return false;
   }
 
@@ -743,7 +757,7 @@ static bool ImportRawSave(DataArray* data, const char* filename, const FILESYSTE
     {
       if (!fi.deleted)
       {
-        Log_ErrorPrintf("Save file with the same name '%s' already exists in memory card", fi.filename.c_str());
+        Error::SetStringFmt(error, "Save file with the same name '{}' already exists in memory card.", fi.filename);
         return false;
       }
 
@@ -751,38 +765,30 @@ static bool ImportRawSave(DataArray* data, const char* filename, const FILESYSTE
     }
   }
 
-  return WriteFile(data, save_name, blocks.value());
+  return WriteFile(data, save_name, blocks.value(), error);
 }
 
-bool ImportSave(DataArray* data, const char* filename)
+bool MemoryCardImage::ImportSave(DataArray* data, const char* filename, Error* error)
 {
-  FILESYSTEM_STAT_DATA sd;
-  if (!FileSystem::StatFile(filename, &sd))
-  {
-    Log_ErrorPrintf("Failed to stat file '%s'", filename);
-    return false;
-  }
-
   // Make sure the size of the actual file is valid
-  if (sd.Size == 0)
+  FILESYSTEM_STAT_DATA sd;
+  if (!FileSystem::StatFile(filename, &sd) || sd.Size == 0)
   {
-    Log_ErrorPrintf("Invalid size for save file '%s'", filename);
+    Error::SetStringView(error, "File does not exist, or is empty.");
     return false;
   }
 
-  if (StringUtil::EndsWith(filename, ".mcs"))
+  if (StringUtil::EqualNoCase(Path::GetExtension(filename), "mcs"))
   {
-    return ImportSaveWithDirectoryFrame(data, filename, sd);
+    return ImportSaveWithDirectoryFrame(data, filename, sd, error);
   }
   else if (sd.Size > 0 && sd.Size < DATA_SIZE && (sd.Size % BLOCK_SIZE) == 0)
   {
-    return ImportRawSave(data, filename, sd);
+    return ImportRawSave(data, filename, sd, error);
   }
   else
   {
-    Log_ErrorPrintf("Unknown save format for '%s'", filename);
+    Error::SetStringView(error, "Unknown save format.");
     return false;
   }
 }
-
-} // namespace MemoryCardImage

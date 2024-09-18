@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 #include "common/progress_callback.h"
@@ -14,7 +14,7 @@ namespace CDImageHasher {
 
 using Hash = std::array<u8, 16>;
 std::string HashToString(const Hash& hash);
-std::optional<Hash> HashFromString(const std::string_view& str);
+std::optional<Hash> HashFromString(std::string_view str);
 
 bool GetImageHash(CDImage* image, Hash* out_hash,
                   ProgressCallback* progress_callback = ProgressCallback::NullProgressCallback);

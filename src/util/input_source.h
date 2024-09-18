@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/small_string.h"
 #include "common/types.h"
 #include "input_manager.h"
 
@@ -28,9 +29,9 @@ public:
 
   virtual void PollEvents() = 0;
 
-  virtual std::optional<InputBindingKey> ParseKeyString(const std::string_view& device,
-                                                        const std::string_view& binding) = 0;
-  virtual std::string ConvertKeyToString(InputBindingKey key) = 0;
+  virtual std::optional<InputBindingKey> ParseKeyString(std::string_view device, std::string_view binding) = 0;
+  virtual TinyString ConvertKeyToString(InputBindingKey key) = 0;
+  virtual TinyString ConvertKeyToIcon(InputBindingKey key) = 0;
 
   /// Enumerates available devices. Returns a pair of the prefix (e.g. SDL-0) and the device name.
   virtual std::vector<std::pair<std::string, std::string>> EnumerateDevices() = 0;
@@ -40,7 +41,7 @@ public:
 
   /// Retrieves bindings that match the generic bindings for the specified device.
   /// Returns false if it's not one of our devices.
-  virtual bool GetGenericBindingMapping(const std::string_view& device, GenericInputBindingMapping* mapping) = 0;
+  virtual bool GetGenericBindingMapping(std::string_view device, GenericInputBindingMapping* mapping) = 0;
 
   /// Informs the source of a new vibration motor state. Changes may not take effect until the next PollEvents() call.
   virtual void UpdateMotorState(InputBindingKey key, float intensity) = 0;
@@ -63,8 +64,8 @@ public:
   static InputBindingKey MakeGenericControllerMotorKey(InputSourceType clazz, u32 controller_index, s32 motor_index);
 
   /// Parses a generic controller key string.
-  static std::optional<InputBindingKey> ParseGenericControllerKey(InputSourceType clazz, const std::string_view& source,
-                                                                  const std::string_view& sub_binding);
+  static std::optional<InputBindingKey> ParseGenericControllerKey(InputSourceType clazz, std::string_view source,
+                                                                  std::string_view sub_binding);
 
   /// Converts a generic controller key to a string.
   static std::string ConvertGenericControllerKeyToString(InputBindingKey key);
@@ -74,10 +75,9 @@ public:
   static std::unique_ptr<InputSource> CreateXInputSource();
   static std::unique_ptr<InputSource> CreateWin32RawInputSource();
 #endif
-#ifdef WITH_SDL2
+#ifndef __ANDROID__
   static std::unique_ptr<InputSource> CreateSDLSource();
-#endif
-#ifdef __ANDROID__
+#else
   static std::unique_ptr<InputSource> CreateAndroidSource();
 #endif
 };

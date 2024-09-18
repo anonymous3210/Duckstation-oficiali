@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 #include <QtCore/QVector>
@@ -7,15 +7,21 @@
 
 #include "ui_advancedsettingswidget.h"
 
-class SettingsDialog;
+class SettingsWindow;
 
 class AdvancedSettingsWidget : public QWidget
 {
   Q_OBJECT
 
 public:
-  explicit AdvancedSettingsWidget(SettingsDialog* dialog, QWidget* parent);
+  explicit AdvancedSettingsWidget(SettingsWindow* dialog, QWidget* parent);
   ~AdvancedSettingsWidget();
+
+Q_SIGNALS:
+  void onShowDebugOptionsChanged(bool enabled);
+
+private Q_SLOTS:
+  void onShowDebugOptionsStateChanged();
 
 private:
   struct TweakOption
@@ -47,7 +53,7 @@ private:
     };
   };
 
-  SettingsDialog* m_dialog;
+  SettingsWindow* m_dialog;
 
   Ui::AdvancedSettingsWidget m_ui;
 

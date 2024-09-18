@@ -1,8 +1,11 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "threading.h"
 #include "assert.h"
+#include "cocoa_tools.h"
+#include "log.h"
+
 #include <memory>
 
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -38,6 +41,8 @@
 #endif
 #endif
 
+Log_SetChannel(Threading);
+
 #ifdef _WIN32
 union FileTimeU64Union
 {
@@ -64,7 +69,7 @@ static u64 getthreadtime(thread_port_t thread)
 }
 #endif
 
-#ifdef __linux__
+#if defined(__linux__) || defined(__FreeBSD__)
 // Helper function to get either either the current cpu usage
 // in called thread or in id thread
 static u64 get_thread_time(void* id = 0)
@@ -227,7 +232,7 @@ u64 Threading::ThreadHandle::GetCPUTime() const
   return user.u64time + kernel.u64time;
 #elif defined(__APPLE__)
   return getthreadtime(pthread_mach_thread_np((pthread_t)m_native_handle));
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__FreeBSD__)
   return get_thread_time(m_native_handle);
 #else
   return 0;
@@ -269,6 +274,46 @@ bool Threading::ThreadHandle::SetAffinity(u64 processor_mask) const
   return false;
 #endif
 }
+
+#ifdef __APPLE__
+
+bool Threading::ThreadHandle::SetTimeConstraints(bool enabled, u64 period, u64 typical_time, u64 maximum_time)
+{
+  const mach_port_t mach_thread_id = pthread_mach_thread_np((pthread_t)m_native_handle);
+  if (!enabled)
+  {
+    thread_standard_policy policy = {};
+    const kern_return_t res = thread_policy_set(
+      mach_thread_id, THREAD_STANDARD_POLICY, reinterpret_cast<thread_policy_t>(&policy), THREAD_STANDARD_POLICY_COUNT);
+    if (res != KERN_SUCCESS)
+    {
+      ERROR_LOG("thread_policy_set(THREAD_STANDARD_POLICY) failed: {}", static_cast<int>(res));
+      return false;
+    }
+
+    return true;
+  }
+
+  thread_time_constraint_policy_data_t constraints;
+  constraints.period = CocoaTools::ConvertNanosecondsToMachTimeBase(period);
+  constraints.computation = CocoaTools::ConvertNanosecondsToMachTimeBase(typical_time);
+  constraints.constraint = CocoaTools::ConvertNanosecondsToMachTimeBase(maximum_time);
+  constraints.preemptible = false;
+
+  const kern_return_t res =
+    thread_policy_set(mach_thread_id, THREAD_TIME_CONSTRAINT_POLICY, reinterpret_cast<thread_policy_t>(&constraints),
+                      THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+  if (res != KERN_SUCCESS)
+  {
+    ERROR_LOG("thread_policy_set(THREAD_TIME_CONSTRAINT_POLICY) failed: {}, args {}, {}, {}", static_cast<int>(res),
+              period, typical_time, maximum_time);
+    return false;
+  }
+
+  return true;
+}
+
+#endif
 
 Threading::Thread::Thread() = default;
 

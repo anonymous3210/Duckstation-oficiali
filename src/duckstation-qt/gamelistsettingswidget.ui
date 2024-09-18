@@ -10,9 +10,6 @@
     <height>376</height>
    </rect>
   </property>
-  <property name="windowTitle">
-   <string>Form</string>
-  </property>
   <layout class="QVBoxLayout" name="verticalLayout" stretch="0,2,0,1,0">
    <property name="leftMargin">
     <number>0</number>
@@ -60,7 +57,10 @@
         <string>Add</string>
        </property>
        <property name="icon">
-        <iconset theme="PostProcessingAdd"/>
+        <iconset theme="folder-add-line"/>
+       </property>
+       <property name="toolButtonStyle">
+        <enum>Qt::ToolButtonTextBesideIcon</enum>
        </property>
       </widget>
      </item>
@@ -76,14 +76,28 @@
         <string>Remove</string>
        </property>
        <property name="icon">
-        <iconset theme="PostProcessingRemove"/>
+        <iconset theme="folder-reduce-line"/>
+       </property>
+       <property name="toolButtonStyle">
+        <enum>Qt::ToolButtonTextBesideIcon</enum>
        </property>
       </widget>
      </item>
     </layout>
    </item>
    <item>
-    <widget class="QTableView" name="searchDirectoryList"/>
+    <widget class="QTableWidget" name="searchDirectoryList">
+     <column>
+      <property name="text">
+       <string>Search Directory</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Scan Recursively</string>
+      </property>
+     </column>
+    </widget>
    </item>
    <item>
     <layout class="QHBoxLayout" name="horizontalLayout_3">
@@ -108,7 +122,7 @@
       </spacer>
      </item>
      <item>
-      <widget class="QToolButton" name="addExcludedPath">
+      <widget class="QToolButton" name="addExcludedFile">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Minimum" vsizetype="Minimum">
          <horstretch>0</horstretch>
@@ -116,10 +130,32 @@
         </sizepolicy>
        </property>
        <property name="text">
-        <string>Add</string>
+        <string>File...</string>
        </property>
        <property name="icon">
-        <iconset theme="PostProcessingAdd"/>
+        <iconset theme="file-add-line"/>
+       </property>
+       <property name="toolButtonStyle">
+        <enum>Qt::ToolButtonTextBesideIcon</enum>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QToolButton" name="addExcludedFolder">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Minimum" vsizetype="Minimum">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="text">
+        <string>Folder...</string>
+       </property>
+       <property name="icon">
+        <iconset theme="folder-add-line"/>
+       </property>
+       <property name="toolButtonStyle">
+        <enum>Qt::ToolButtonTextBesideIcon</enum>
        </property>
       </widget>
      </item>
@@ -135,7 +171,10 @@
         <string>Remove</string>
        </property>
        <property name="icon">
-        <iconset theme="PostProcessingRemove"/>
+        <iconset theme="folder-reduce-line"/>
+       </property>
+       <property name="toolButtonStyle">
+        <enum>Qt::ToolButtonTextBesideIcon</enum>
        </property>
       </widget>
      </item>
@@ -171,7 +210,7 @@
         <string>Scan For New Games</string>
        </property>
        <property name="icon">
-        <iconset theme="ScanForGames"/>
+        <iconset theme="mag-line"/>
        </property>
       </widget>
      </item>
@@ -187,7 +226,7 @@
         <string>Rescan All Games</string>
        </property>
        <property name="icon">
-        <iconset theme="RescanAllGames"/>
+        <iconset theme="refresh-line"/>
        </property>
       </widget>
      </item>

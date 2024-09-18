@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -7,12 +7,14 @@
 #include "common/heap_array.h"
 #include "common/types.h"
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
 
 enum class GPUShaderStage : u8;
+enum class GPUShaderLanguage : u8;
 
 class GPUShaderCache
 {
@@ -21,7 +23,9 @@ public:
 
   struct alignas(8) CacheIndexKey
   {
-    u32 shader_type;
+    u8 shader_type;
+    u8 shader_language;
+    u8 unused[2];
     u32 source_length;
     u64 source_hash_low;
     u64 source_hash_high;
@@ -46,14 +50,14 @@ public:
 
   bool IsOpen() const { return (m_index_file != nullptr); }
 
-  bool Open(const std::string_view& base_filename, u32 version);
+  bool Open(std::string_view base_filename, u32 render_api_version, u32 cache_version);
   bool Create();
   void Close();
 
-  static CacheIndexKey GetCacheKey(GPUShaderStage stage, const std::string_view& shader_code,
-                                   const std::string_view& entry_point);
+  static CacheIndexKey GetCacheKey(GPUShaderStage stage, GPUShaderLanguage language, std::string_view shader_code,
+                                   std::string_view entry_point);
 
-  bool Lookup(const CacheIndexKey& key, ShaderBinary* binary);
+  std::optional<ShaderBinary> Lookup(const CacheIndexKey& key);
   bool Insert(const CacheIndexKey& key, const void* data, u32 data_size);
   void Clear();
 
@@ -73,7 +77,8 @@ private:
   CacheIndex m_index;
 
   std::string m_base_filename;
-  u32 m_version;
+  u32 m_render_api_version = 0;
+  u32 m_version = 0;
 
   std::FILE* m_index_file = nullptr;
   std::FILE* m_blob_file = nullptr;

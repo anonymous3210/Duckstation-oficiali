@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 #include "types.h"
@@ -52,6 +52,11 @@ public:
   /// Sets the affinity for a thread to the specified processors.
   /// Obviously, only works up to 64 processors.
   bool SetAffinity(u64 processor_mask) const;
+
+#ifdef __APPLE__
+  /// Only available on MacOS, sets a period/maximum time for the scheduler.
+  bool SetTimeConstraints(bool enabled, u64 period, u64 typical_time, u64 maximum_time);
+#endif
 
 protected:
   void* m_native_handle = nullptr;

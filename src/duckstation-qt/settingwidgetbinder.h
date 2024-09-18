@@ -1,16 +1,17 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
 #include "qthost.h"
 #include "qtutils.h"
-#include "settingsdialog.h"
+#include "settingswindow.h"
 
 #include "core/host.h"
 #include "core/settings.h"
 
 #include "common/assert.h"
+#include "common/file_system.h"
 #include "common/path.h"
 
 #include <QtCore/QtCore>
@@ -20,8 +21,10 @@
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QFileDialog>
+#include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMenu>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
 #include <optional>
@@ -263,50 +266,114 @@ struct SettingAccessor<QCheckBox>
   template<typename F>
   static void connectValueChanged(QCheckBox* widget, F func)
   {
-    widget->connect(widget, &QCheckBox::stateChanged, func);
+    widget->connect(widget, &QCheckBox::checkStateChanged, func);
   }
 };
 
 template<>
 struct SettingAccessor<QSlider>
 {
+  static bool isNullable(const QSlider* widget) { return widget->property(NULLABLE_PROPERTY).toBool(); }
+
   static bool getBoolValue(const QSlider* widget) { return widget->value() > 0; }
   static void setBoolValue(QSlider* widget, bool value) { widget->setValue(value ? 1 : 0); }
-  static void makeNullableBool(QSlider* widget, bool globalSetting) { widget->setEnabled(false); }
-  static std::optional<bool> getNullableBoolValue(const QSlider* widget) { return getBoolValue(widget); }
+  static void makeNullableBool(QSlider* widget, bool globalSetting)
+  {
+    widget->setProperty(NULLABLE_PROPERTY, QVariant(true));
+    widget->setProperty(GLOBAL_VALUE_PROPERTY, QVariant(globalSetting));
+  }
+  static std::optional<bool> getNullableBoolValue(const QSlider* widget)
+  {
+    if (widget->property(IS_NULL_PROPERTY).toBool())
+      return std::nullopt;
+
+    return getBoolValue(widget);
+  }
   static void setNullableBoolValue(QSlider* widget, std::optional<bool> value)
   {
-    setBoolValue(widget, value.value_or(false));
+    widget->setProperty(IS_NULL_PROPERTY, QVariant(!value.has_value()));
+    setBoolValue(widget, value.has_value() ? value.value() : widget->property(GLOBAL_VALUE_PROPERTY).toBool());
   }
 
   static int getIntValue(const QSlider* widget) { return widget->value(); }
   static void setIntValue(QSlider* widget, int value) { widget->setValue(value); }
-  static void makeNullableInt(QSlider* widget, int globalValue) { widget->setEnabled(false); }
-  static std::optional<int> getNullableIntValue(const QSlider* widget) { return getIntValue(widget); }
-  static void setNullableIntValue(QSlider* widget, std::optional<int> value) { setIntValue(widget, value.value_or(0)); }
+  static void makeNullableInt(QSlider* widget, int globalValue)
+  {
+    widget->setProperty(NULLABLE_PROPERTY, QVariant(true));
+    widget->setProperty(GLOBAL_VALUE_PROPERTY, QVariant(globalValue));
+  }
+  static std::optional<int> getNullableIntValue(const QSlider* widget)
+  {
+    if (widget->property(IS_NULL_PROPERTY).toBool())
+      return std::nullopt;
+
+    return getIntValue(widget);
+  }
+  static void setNullableIntValue(QSlider* widget, std::optional<int> value)
+  {
+    widget->setProperty(IS_NULL_PROPERTY, QVariant(!value.has_value()));
+    setIntValue(widget, value.has_value() ? value.value() : widget->property(GLOBAL_VALUE_PROPERTY).toInt());
+  }
 
   static float getFloatValue(const QSlider* widget) { return static_cast<float>(widget->value()); }
   static void setFloatValue(QSlider* widget, float value) { widget->setValue(static_cast<int>(value)); }
   static void makeNullableFloat(QSlider* widget, float globalValue) { widget->setEnabled(false); }
-  static std::optional<float> getNullableFloatValue(const QSlider* widget) { return getFloatValue(widget); }
+  static std::optional<float> getNullableFloatValue(const QSlider* widget)
+  {
+    if (widget->property(IS_NULL_PROPERTY).toBool())
+      return std::nullopt;
+
+    return getFloatValue(widget);
+  }
   static void setNullableFloatValue(QSlider* widget, std::optional<float> value)
   {
-    setFloatValue(widget, value.value_or(0.0f));
+    widget->setProperty(IS_NULL_PROPERTY, QVariant(!value.has_value()));
+    setFloatValue(widget, value.has_value() ? value.value() : widget->property(GLOBAL_VALUE_PROPERTY).toFloat());
   }
 
   static QString getStringValue(const QSlider* widget) { return QString::number(widget->value()); }
   static void setStringValue(QSlider* widget, const QString& value) { widget->setValue(value.toInt()); }
   static void makeNullableString(QSlider* widget, const QString& globalValue) { widget->setEnabled(false); }
-  static std::optional<QString> getNullableStringValue(const QSlider* widget) { return getStringValue(widget); }
+  static std::optional<QString> getNullableStringValue(const QSlider* widget)
+  {
+    if (widget->property(IS_NULL_PROPERTY).toBool())
+      return std::nullopt;
+
+    return getStringValue(widget);
+  }
   static void setNullableStringValue(QSlider* widget, std::optional<QString> value)
   {
-    setStringValue(widget, value.value_or(QString()));
+    widget->setProperty(IS_NULL_PROPERTY, QVariant(!value.has_value()));
+    setStringValue(widget, value.has_value() ? value.value() : widget->property(GLOBAL_VALUE_PROPERTY).toString());
   }
 
   template<typename F>
   static void connectValueChanged(QSlider* widget, F func)
   {
-    widget->connect(widget, &QSlider::valueChanged, func);
+    if (!isNullable(widget))
+    {
+      widget->connect(widget, &QSlider::valueChanged, func);
+    }
+    else
+    {
+      widget->setContextMenuPolicy(Qt::CustomContextMenu);
+      widget->connect(widget, &QSlider::customContextMenuRequested, widget, [widget, func](const QPoint& pt) {
+        QMenu menu(widget);
+        widget->connect(menu.addAction(qApp->translate("SettingWidgetBinder", "Reset")), &QAction::triggered, widget,
+                        [widget, func = std::move(func)]() {
+                          const bool old = widget->blockSignals(true);
+                          setNullableIntValue(widget, std::nullopt);
+                          widget->blockSignals(old);
+                          func();
+                        });
+        menu.exec(widget->mapToGlobal(pt));
+      });
+      widget->connect(widget, &QSlider::valueChanged, widget, [widget, func = std::move(func)]() {
+        if (widget->property(IS_NULL_PROPERTY).toBool())
+          widget->setProperty(IS_NULL_PROPERTY, QVariant(false));
+        func();
+      });
+    }
   }
 };
 
@@ -643,7 +710,7 @@ static void BindWidgetToBoolSetting(SettingsInterface* sif, WidgetType* widget, 
       else
         sif->DeleteValue(section.c_str(), key.c_str());
 
-      sif->Save();
+      QtHost::SaveGameSettings(sif, true);
       g_emu_thread->reloadGameSettings();
     });
   }
@@ -686,7 +753,7 @@ static void BindWidgetToIntSetting(SettingsInterface* sif, WidgetType* widget, s
         else
           sif->DeleteValue(section.c_str(), key.c_str());
 
-        sif->Save();
+        QtHost::SaveGameSettings(sif, true);
         g_emu_thread->reloadGameSettings();
       });
   }
@@ -700,6 +767,87 @@ static void BindWidgetToIntSetting(SettingsInterface* sif, WidgetType* widget, s
         Host::SetBaseIntSettingValue(section.c_str(), key.c_str(), new_value + option_offset);
         Host::CommitBaseSettingChanges();
         g_emu_thread->applySettings();
+      });
+  }
+}
+
+template<typename WidgetType>
+static inline void BindWidgetAndLabelToIntSetting(SettingsInterface* sif, WidgetType* widget, QLabel* label,
+                                                  const QString& label_suffix, std::string section, std::string key,
+                                                  int default_value, int option_offset = 0)
+{
+  using Accessor = SettingAccessor<WidgetType>;
+
+  const s32 global_value =
+    Host::GetBaseIntSettingValue(section.c_str(), key.c_str(), static_cast<s32>(default_value)) - option_offset;
+
+  if (sif)
+  {
+    QFont orig_font(label->font());
+    QFont bold_font(orig_font);
+    bold_font.setBold(true);
+
+    Accessor::makeNullableInt(widget, global_value);
+
+    int sif_value;
+    if (sif->GetIntValue(section.c_str(), key.c_str(), &sif_value))
+    {
+      Accessor::setNullableIntValue(widget, sif_value - option_offset);
+      if (label)
+      {
+        label->setText(QStringLiteral("%1%2").arg(sif_value).arg(label_suffix));
+        label->setFont(bold_font);
+      }
+    }
+    else
+    {
+      Accessor::setNullableIntValue(widget, std::nullopt);
+      if (label)
+        label->setText(QStringLiteral("%1%2").arg(global_value).arg(label_suffix));
+    }
+
+    Accessor::connectValueChanged(widget, [sif, widget, label, label_suffix, section = std::move(section),
+                                           key = std::move(key), option_offset, global_value,
+                                           bold_font = std::move(bold_font), orig_font = std::move(orig_font)]() {
+      if (std::optional<int> new_value = Accessor::getNullableIntValue(widget); new_value.has_value())
+      {
+        sif->SetIntValue(section.c_str(), key.c_str(), new_value.value() + option_offset);
+        if (label)
+        {
+          label->setFont(bold_font);
+          label->setText(QStringLiteral("%1%2").arg(new_value.value()).arg(label_suffix));
+        }
+      }
+      else
+      {
+        sif->DeleteValue(section.c_str(), key.c_str());
+        if (label)
+        {
+          label->setFont(orig_font);
+          label->setText(QStringLiteral("%1%2").arg(global_value).arg(label_suffix));
+        }
+      }
+
+      QtHost::SaveGameSettings(sif, true);
+      g_emu_thread->reloadGameSettings();
+    });
+  }
+  else
+  {
+    Accessor::setIntValue(widget, static_cast<int>(global_value));
+
+    if (label)
+      label->setText(QStringLiteral("%1%2").arg(global_value).arg(label_suffix));
+
+    Accessor::connectValueChanged(
+      widget, [widget, label, label_suffix, section = std::move(section), key = std::move(key), option_offset]() {
+        const int new_value = Accessor::getIntValue(widget);
+        Host::SetBaseIntSettingValue(section.c_str(), key.c_str(), new_value + option_offset);
+        Host::CommitBaseSettingChanges();
+        g_emu_thread->applySettings();
+
+        if (label)
+          label->setText(QStringLiteral("%1%2").arg(new_value).arg(label_suffix));
       });
   }
 }
@@ -728,7 +876,7 @@ static void BindWidgetToFloatSetting(SettingsInterface* sif, WidgetType* widget,
       else
         sif->DeleteValue(section.c_str(), key.c_str());
 
-      sif->Save();
+      QtHost::SaveGameSettings(sif, true);
       g_emu_thread->reloadGameSettings();
     });
   }
@@ -769,7 +917,7 @@ static void BindWidgetToNormalizedSetting(SettingsInterface* sif, WidgetType* wi
       else
         sif->DeleteValue(section.c_str(), key.c_str());
 
-      sif->Save();
+      QtHost::SaveGameSettings(sif, true);
       g_emu_thread->reloadGameSettings();
     });
   }
@@ -811,7 +959,7 @@ static void BindWidgetToStringSetting(SettingsInterface* sif, WidgetType* widget
       else
         sif->DeleteValue(section.c_str(), key.c_str());
 
-      sif->Save();
+      QtHost::SaveGameSettings(sif, true);
       g_emu_thread->reloadGameSettings();
     });
   }
@@ -876,7 +1024,7 @@ static void BindWidgetToEnumSetting(SettingsInterface* sif, WidgetType* widget, 
           sif->DeleteValue(section.c_str(), key.c_str());
         }
 
-        sif->Save();
+        QtHost::SaveGameSettings(sif, true);
         g_emu_thread->reloadGameSettings();
       });
   }
@@ -944,7 +1092,7 @@ static void BindWidgetToEnumSetting(SettingsInterface* sif, WidgetType* widget, 
         else
           sif->DeleteValue(section.c_str(), key.c_str());
 
-        sif->Save();
+        QtHost::SaveGameSettings(sif, true);
         g_emu_thread->reloadGameSettings();
       });
   }
@@ -1012,7 +1160,7 @@ static void BindWidgetToEnumSetting(SettingsInterface* sif, WidgetType* widget, 
         else
           sif->DeleteValue(section.c_str(), key.c_str());
 
-        sif->Save();
+        QtHost::SaveGameSettings(sif, true);
         g_emu_thread->reloadGameSettings();
       });
   }
@@ -1030,22 +1178,20 @@ static void BindWidgetToEnumSetting(SettingsInterface* sif, WidgetType* widget, 
   }
 }
 
-template<typename WidgetType>
-static void BindWidgetToFolderSetting(SettingsInterface* sif, WidgetType* widget, QAbstractButton* browse_button,
-                                      QAbstractButton* open_button, QAbstractButton* reset_button, std::string section,
-                                      std::string key, std::string default_value)
+static inline void BindWidgetToFolderSetting(SettingsInterface* sif, QLineEdit* widget, QAbstractButton* browse_button,
+                                             QString browse_title, QAbstractButton* open_button,
+                                             QAbstractButton* reset_button, std::string section, std::string key,
+                                             std::string default_value, bool use_relative = true)
 {
-  using Accessor = SettingAccessor<WidgetType>;
+  using Accessor = SettingAccessor<QLineEdit>;
 
   std::string current_path(Host::GetBaseStringSettingValue(section.c_str(), key.c_str(), default_value.c_str()));
   if (current_path.empty())
     current_path = default_value;
-  else if (!Path::IsAbsolute(current_path))
-    current_path = Path::Combine(EmuFolders::DataRoot, current_path);
-
+  else if (use_relative && !Path::IsAbsolute(current_path))
+    current_path = Path::Canonicalize(Path::Combine(EmuFolders::DataRoot, current_path));
   const QString value(QString::fromStdString(current_path));
   Accessor::setStringValue(widget, value);
-
   // if we're doing per-game settings, disable the widget, we only allow folder changes in the base config
   if (sif)
   {
@@ -1057,33 +1203,63 @@ static void BindWidgetToFolderSetting(SettingsInterface* sif, WidgetType* widget
     return;
   }
 
-  Accessor::connectValueChanged(widget, [widget, section = std::move(section), key = std::move(key)]() {
-    const std::string new_value(Accessor::getStringValue(widget).toStdString());
+  auto value_changed = [widget, section = std::move(section), key = std::move(key), default_value, use_relative]() {
+    const std::string new_value(widget->text().toStdString());
     if (!new_value.empty())
     {
-      std::string relative_path(Path::MakeRelative(new_value, EmuFolders::DataRoot));
-      Host::SetBaseStringSettingValue(section.c_str(), key.c_str(), relative_path.c_str());
+      if (FileSystem::DirectoryExists(new_value.c_str()) ||
+          QMessageBox::question(
+            QtUtils::GetRootWidget(widget), qApp->translate("SettingWidgetBinder", "Confirm Folder"),
+            qApp
+              ->translate(
+                "SettingWidgetBinder",
+                "The chosen directory does not currently exist:\n\n%1\n\nDo you want to create this directory?")
+              .arg(QString::fromStdString(new_value)),
+            QMessageBox::Yes, QMessageBox::No) == QMessageBox::Yes)
+      {
+        if (use_relative)
+        {
+          const std::string relative_path(Path::MakeRelative(new_value, EmuFolders::DataRoot));
+          Host::SetBaseStringSettingValue(section.c_str(), key.c_str(), relative_path.c_str());
+        }
+        else
+        {
+          Host::SetBaseStringSettingValue(section.c_str(), key.c_str(), new_value.c_str());
+        }
+
+        Host::CommitBaseSettingChanges();
+        g_emu_thread->updateEmuFolders();
+        return;
+      }
     }
     else
     {
-      Host::DeleteBaseSettingValue(section.c_str(), key.c_str());
+      QMessageBox::critical(QtUtils::GetRootWidget(widget), qApp->translate("SettingWidgetBinder", "Error"),
+                            qApp->translate("SettingWidgetBinder", "Folder path cannot be empty."));
     }
 
-    Host::CommitBaseSettingChanges();
-    g_emu_thread->updateEmuFolders();
-  });
+    // reset to old value
+    std::string current_path(Host::GetBaseStringSettingValue(section.c_str(), key.c_str(), default_value.c_str()));
+    if (current_path.empty())
+      current_path = default_value;
+    else if (use_relative && !Path::IsAbsolute(current_path))
+      current_path = Path::Canonicalize(Path::Combine(EmuFolders::DataRoot, current_path));
+
+    widget->setText(QString::fromStdString(current_path));
+  };
 
   if (browse_button)
   {
-    QObject::connect(browse_button, &QAbstractButton::clicked, browse_button, [widget, key]() {
-      const QString path(QDir::toNativeSeparators(QFileDialog::getExistingDirectory(
-        QtUtils::GetRootWidget(widget),
-        qApp->translate("SettingWidgetBinder", "Select folder for %1").arg(QString::fromStdString(key)))));
-      if (path.isEmpty())
-        return;
+    QObject::connect(browse_button, &QAbstractButton::clicked, browse_button,
+                     [widget, browse_title = std::move(browse_title), value_changed]() {
+                       const QString path = QDir::toNativeSeparators(
+                         QFileDialog::getExistingDirectory(QtUtils::GetRootWidget(widget), browse_title));
+                       if (path.isEmpty())
+                         return;
 
-      Accessor::setStringValue(widget, path);
-    });
+                       widget->setText(path);
+                       value_changed();
+                     });
   }
   if (open_button)
   {
@@ -1096,9 +1272,47 @@ static void BindWidgetToFolderSetting(SettingsInterface* sif, WidgetType* widget
   if (reset_button)
   {
     QObject::connect(reset_button, &QAbstractButton::clicked, reset_button,
-                     [widget, default_value = std::move(default_value)]() {
-                       Accessor::setStringValue(widget, QString::fromStdString(default_value));
+                     [widget, default_value = std::move(default_value), value_changed]() {
+                       widget->setText(QString::fromStdString(default_value));
+                       value_changed();
                      });
   }
+
+  widget->connect(widget, &QLineEdit::editingFinished, widget, std::move(value_changed));
 }
+
+template<typename WidgetType>
+static inline void SetAvailability(WidgetType* widget, bool available)
+{
+  if (available)
+    return;
+
+  widget->disconnect();
+
+  if constexpr (std::is_same_v<WidgetType, QComboBox>)
+  {
+    widget->clear();
+    widget->addItem(qApp->translate("SettingWidgetBinder", "Incompatible with this game."));
+  }
+  else if constexpr (std::is_same_v<WidgetType, QLineEdit>)
+  {
+    widget->setText(qApp->translate("SettingWidgetBinder", "Incompatible with this game."));
+  }
+  else if constexpr (std::is_same_v<WidgetType, QCheckBox>)
+  {
+    widget->setText(widget->text() + qApp->translate("SettingWidgetBinder", " [incompatible]"));
+    widget->setCheckState(Qt::Unchecked);
+  }
+  else if constexpr (std::is_same_v<WidgetType, QSlider>)
+  {
+    widget->setTickPosition(0);
+  }
+  else if constexpr (std::is_same_v<WidgetType, QSpinBox> || std::is_same_v<WidgetType, QDoubleSpinBox>)
+  {
+    widget->setValue(0);
+  }
+
+  widget->setEnabled(false);
+}
+
 } // namespace SettingWidgetBinder

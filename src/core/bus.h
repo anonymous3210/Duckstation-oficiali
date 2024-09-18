@@ -1,16 +1,21 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
-#include "common/bitfield.h"
-#include "util/memory_arena.h"
+
 #include "types.h"
+
+#include "common/bitfield.h"
+
 #include <array>
 #include <bitset>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
+
+class Error;
 
 class StateWrapper;
 
@@ -24,9 +29,12 @@ enum : u32
   RAM_8MB_SIZE = 0x800000,
   RAM_8MB_MASK = RAM_8MB_SIZE - 1,
   RAM_MIRROR_END = 0x800000,
+  RAM_MIRROR_SIZE = 0x800000,
   EXP1_BASE = 0x1F000000,
   EXP1_SIZE = 0x800000,
   EXP1_MASK = EXP1_SIZE - 1,
+  HW_BASE = 0x1F801000,
+  HW_SIZE = 0x1000,
   MEMCTRL_BASE = 0x1F801000,
   MEMCTRL_SIZE = 0x40,
   MEMCTRL_MASK = MEMCTRL_SIZE - 1,
@@ -39,9 +47,9 @@ enum : u32
   MEMCTRL2_BASE = 0x1F801060,
   MEMCTRL2_SIZE = 0x10,
   MEMCTRL2_MASK = MEMCTRL2_SIZE - 1,
-  INTERRUPT_CONTROLLER_BASE = 0x1F801070,
-  INTERRUPT_CONTROLLER_SIZE = 0x10,
-  INTERRUPT_CONTROLLER_MASK = INTERRUPT_CONTROLLER_SIZE - 1,
+  INTC_BASE = 0x1F801070,
+  INTC_SIZE = 0x10,
+  INTERRUPT_CONTROLLER_MASK = INTC_SIZE - 1,
   DMA_BASE = 0x1F801080,
   DMA_SIZE = 0x80,
   DMA_MASK = DMA_SIZE - 1,
@@ -59,15 +67,19 @@ enum : u32
   MDEC_MASK = MDEC_SIZE - 1,
   SPU_BASE = 0x1F801C00,
   SPU_SIZE = 0x400,
-  SPU_MASK = 0x3FF,
+  SPU_MASK = SPU_SIZE - 1,
+  SIO2_BASE = 0x1F808000,
+  SIO2_SIZE = 0x1000,
+  SIO2_MASK = SIO2_SIZE - 1,
   EXP2_BASE = 0x1F802000,
   EXP2_SIZE = 0x2000,
   EXP2_MASK = EXP2_SIZE - 1,
   EXP3_BASE = 0x1FA00000,
-  EXP3_SIZE = 0x1,
+  EXP3_SIZE = 0x200000,
   EXP3_MASK = EXP3_SIZE - 1,
   BIOS_BASE = 0x1FC00000,
   BIOS_SIZE = 0x80000,
+  BIOS_MIRROR_SIZE = 0x400000,
   BIOS_MASK = 0x7FFFF,
 };
 
@@ -81,46 +93,75 @@ enum : TickCount
   RAM_READ_TICKS = 6
 };
 
-enum : size_t
-{
-  // Our memory arena contains storage for RAM.
-  MEMORY_ARENA_SIZE = RAM_8MB_SIZE,
-
-  // Offsets within the memory arena.
-  MEMORY_ARENA_RAM_OFFSET = 0,
-
-#ifdef WITH_MMAP_FASTMEM
-  // Fastmem region size is 4GB to cover the entire 32-bit address space.
-  FASTMEM_REGION_SIZE = UINT64_C(0x100000000),
-#endif
-};
-
 enum : u32
 {
-  RAM_2MB_CODE_PAGE_COUNT = (RAM_2MB_SIZE + (HOST_PAGE_SIZE + 1)) / HOST_PAGE_SIZE,
-  RAM_8MB_CODE_PAGE_COUNT = (RAM_8MB_SIZE + (HOST_PAGE_SIZE + 1)) / HOST_PAGE_SIZE,
+  RAM_2MB_CODE_PAGE_COUNT = (RAM_2MB_SIZE + (HOST_PAGE_SIZE - 1)) / HOST_PAGE_SIZE,
+  RAM_8MB_CODE_PAGE_COUNT = (RAM_8MB_SIZE + (HOST_PAGE_SIZE - 1)) / HOST_PAGE_SIZE,
 
-  FASTMEM_LUT_NUM_PAGES = 0x100000, // 0x100000000 >> 12
-  FASTMEM_LUT_NUM_SLOTS = FASTMEM_LUT_NUM_PAGES * 2,
+  MEMORY_LUT_PAGE_SIZE = 4096,
+  MEMORY_LUT_PAGE_SHIFT = 12,
+  MEMORY_LUT_PAGE_MASK = MEMORY_LUT_PAGE_SIZE - 1,
+  MEMORY_LUT_SIZE = 0x100000,                 // 0x100000000 >> 12
+  MEMORY_LUT_SLOTS = MEMORY_LUT_SIZE * 3 * 2, // [size][read_write]
+
+  FASTMEM_LUT_PAGE_SIZE = 4096,
+  FASTMEM_LUT_PAGE_MASK = FASTMEM_LUT_PAGE_SIZE - 1,
+  FASTMEM_LUT_PAGE_SHIFT = 12,
+  FASTMEM_LUT_SIZE = 0x100000,              // 0x100000000 >> 12
+  FASTMEM_LUT_SLOTS = FASTMEM_LUT_SIZE * 2, // [isc]
 };
 
-bool Initialize();
+#ifdef ENABLE_MMAP_FASTMEM
+// Fastmem region size is 4GB to cover the entire 32-bit address space.
+static constexpr size_t FASTMEM_ARENA_SIZE = UINT64_C(0x100000000);
+#endif
+
+bool AllocateMemory(bool export_shared_memory, Error* error);
+void ReleaseMemory();
+
+/// Frees and re-allocates the memory map for the process.
+/// This should be called when shared memory exports are enabled.
+bool ReallocateMemoryMap(bool export_shared_memory, Error* error);
+
+/// Cleans up/deletes the shared memory object for this process.
+/// Should be called when the process crashes, to avoid leaking.
+void CleanupMemoryMap();
+
+void Initialize();
 void Shutdown();
 void Reset();
 bool DoState(StateWrapper& sw);
 
-CPUFastmemMode GetFastmemMode();
-u8* GetFastmemBase();
-void UpdateFastmemViews(CPUFastmemMode mode);
+using MemoryReadHandler = u32 (*)(VirtualMemoryAddress address);
+using MemoryWriteHandler = void (*)(VirtualMemoryAddress, u32);
+
+void** GetMemoryHandlers(bool isolate_cache, bool swap_caches);
+
+template<typename FP>
+ALWAYS_INLINE_RELEASE static FP* OffsetHandlerArray(void** handlers, MemoryAccessSize size, MemoryAccessType type)
+{
+  return reinterpret_cast<FP*>(handlers +
+                               (((static_cast<size_t>(size) * 2) + static_cast<size_t>(type)) * MEMORY_LUT_SIZE));
+}
+
+void* GetFastmemBase(bool isc);
+void RemapFastmemViews();
 bool CanUseFastmemForAddress(VirtualMemoryAddress address);
 
 void SetExpansionROM(std::vector<u8> data);
 
-extern std::bitset<RAM_8MB_CODE_PAGE_COUNT> m_ram_code_bits;
-extern u8* g_ram;            // 2MB-8MB RAM
-extern u32 g_ram_size;       // Active size of RAM.
-extern u32 g_ram_mask;       // Active address bits for RAM.
-extern u8 g_bios[BIOS_SIZE]; // 512K BIOS ROM
+extern std::bitset<RAM_8MB_CODE_PAGE_COUNT> g_ram_code_bits;
+extern u8* g_ram;             // 2MB-8MB RAM
+extern u8* g_unprotected_ram; // RAM without page protection, use for debugger access.
+extern u32 g_ram_size;        // Active size of RAM.
+extern u32 g_ram_mapped_size; // Maximum mapped address for RAM, determined by RAM size register.
+extern u32 g_ram_mask;        // Active address bits for RAM.
+extern u8* g_bios;            // 512K BIOS ROM
+extern std::array<TickCount, 3> g_exp1_access_time;
+extern std::array<TickCount, 3> g_exp2_access_time;
+extern std::array<TickCount, 3> g_bios_access_time;
+extern std::array<TickCount, 3> g_cdrom_access_time;
+extern std::array<TickCount, 3> g_spu_access_time;
 
 /// Returns true if the address specified is writable (RAM).
 ALWAYS_INLINE static bool IsRAMAddress(PhysicalMemoryAddress address)
@@ -162,6 +203,9 @@ ALWAYS_INLINE TickCount GetDMARAMTickCount(u32 word_count)
   return static_cast<TickCount>(word_count + ((word_count + 15) / 16));
 }
 
+/// Returns a pointer to the cycle count for a non-RAM memory access.
+const TickCount* GetMemoryAccessTimePtr(PhysicalMemoryAddress address, MemoryAccessSize size);
+
 enum class MemoryRegion
 {
   RAM,
@@ -177,12 +221,16 @@ enum class MemoryRegion
 std::optional<MemoryRegion> GetMemoryRegionForAddress(PhysicalMemoryAddress address);
 PhysicalMemoryAddress GetMemoryRegionStart(MemoryRegion region);
 PhysicalMemoryAddress GetMemoryRegionEnd(MemoryRegion region);
+bool IsMemoryRegionWritable(MemoryRegion region);
 u8* GetMemoryRegionPointer(MemoryRegion region);
 std::optional<PhysicalMemoryAddress> SearchMemory(PhysicalMemoryAddress start_address, const u8* pattern,
                                                   const u8* mask, u32 pattern_length);
 
 // TTY Logging.
 void AddTTYCharacter(char ch);
-void AddTTYString(const std::string_view& str);
+void AddTTYString(std::string_view str);
+
+/// Injects a PS-EXE into memory at its specified load location. If set_pc is set, execution will be redirected.
+bool InjectExecutable(std::span<const u8> buffer, bool set_pc, Error* error);
 
 } // namespace Bus
