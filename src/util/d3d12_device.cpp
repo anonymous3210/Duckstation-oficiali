@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "d3d12_device.h"
 #include "d3d12_builders.h"
@@ -57,11 +57,10 @@ enum : u32
 // We need to synchronize instance creation because of adapter enumeration from the UI thread.
 static std::mutex s_instance_mutex;
 
-static constexpr D3D12_CLEAR_VALUE s_present_clear_color = {DXGI_FORMAT_R8G8B8A8_UNORM, {{0.0f, 0.0f, 0.0f, 1.0f}}};
 static constexpr GPUTexture::Format s_swap_chain_format = GPUTexture::Format::RGBA8;
 
 // We just need to keep this alive, never reference it.
-static std::vector<u8> s_pipeline_cache_data;
+static DynamicHeapArray<u8> s_pipeline_cache_data;
 
 #ifdef _DEBUG
 #include "WinPixEventRuntime/pix3.h"
@@ -118,9 +117,8 @@ D3D12Device::ComPtr<ID3D12RootSignature> D3D12Device::CreateRootSignature(const 
   return rs;
 }
 
-bool D3D12Device::CreateDevice(std::string_view adapter, bool threaded_presentation,
-                               std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features,
-                               Error* error)
+bool D3D12Device::CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
+                               FeatureMask disabled_features, Error* error)
 {
   std::unique_lock lock(s_instance_mutex);
 
@@ -149,12 +147,13 @@ bool D3D12Device::CreateDevice(std::string_view adapter, bool threaded_presentat
   }
 
   // Create the actual device.
-  for (D3D_FEATURE_LEVEL try_feature_level : {D3D_FEATURE_LEVEL_11_0})
+  D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_1_0_CORE;
+  for (D3D_FEATURE_LEVEL try_feature_level : {D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_11_0})
   {
     hr = D3D12CreateDevice(m_adapter.Get(), try_feature_level, IID_PPV_ARGS(&m_device));
     if (SUCCEEDED(hr))
     {
-      m_feature_level = try_feature_level;
+      feature_level = try_feature_level;
       break;
     }
   }
@@ -234,7 +233,7 @@ bool D3D12Device::CreateDevice(std::string_view adapter, bool threaded_presentat
     return false;
   }
 
-  SetFeatures(disabled_features);
+  SetFeatures(feature_level, disabled_features);
 
   if (!CreateCommandLists(error) || !CreateDescriptorHeaps(error))
     return false;
@@ -269,7 +268,7 @@ void D3D12Device::DestroyDevice()
   DestroyCommandLists();
 
   m_pipeline_library.Reset();
-  std::vector<u8>().swap(s_pipeline_cache_data);
+  s_pipeline_cache_data.deallocate();
   m_fence.Reset();
   if (m_fence_event != NULL)
   {
@@ -284,47 +283,53 @@ void D3D12Device::DestroyDevice()
   m_dxgi_factory.Reset();
 }
 
-bool D3D12Device::ReadPipelineCache(const std::string& filename)
+void D3D12Device::GetPipelineCacheHeader(PIPELINE_CACHE_HEADER* hdr)
 {
-  std::optional<std::vector<u8>> data = FileSystem::ReadBinaryFile(filename.c_str());
+  const LUID adapter_luid = m_device->GetAdapterLuid();
+  std::memcpy(&hdr->adapter_luid, &adapter_luid, sizeof(hdr->adapter_luid));
+  hdr->render_api_version = m_render_api_version;
+  hdr->unused = 0;
+}
 
-  HRESULT hr =
-    m_device->CreatePipelineLibrary(data.has_value() ? data->data() : nullptr, data.has_value() ? data->size() : 0,
+bool D3D12Device::ReadPipelineCache(DynamicHeapArray<u8> data, Error* error)
+{
+  PIPELINE_CACHE_HEADER expected_header;
+  GetPipelineCacheHeader(&expected_header);
+  if ((data.size() < sizeof(PIPELINE_CACHE_HEADER) ||
+       std::memcmp(data.data(), &expected_header, sizeof(PIPELINE_CACHE_HEADER)) != 0))
+  {
+    Error::SetStringView(error, "Pipeline cache header does not match current device.");
+    return false;
+  }
+
+  const HRESULT hr =
+    m_device->CreatePipelineLibrary(&data[sizeof(PIPELINE_CACHE_HEADER)], data.size() - sizeof(PIPELINE_CACHE_HEADER),
                                     IID_PPV_ARGS(m_pipeline_library.ReleaseAndGetAddressOf()));
-  if (SUCCEEDED(hr))
-  {
-    if (data.has_value())
-      s_pipeline_cache_data = std::move(data.value());
-
-    return true;
-  }
-
-  // Try without the cache data.
-  if (data.has_value())
-  {
-    WARNING_LOG("CreatePipelineLibrary() failed, trying without cache data. Error: {}",
-                Error::CreateHResult(hr).GetDescription());
-
-    hr = m_device->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(m_pipeline_library.ReleaseAndGetAddressOf()));
-    if (SUCCEEDED(hr))
-    {
-      // Delete cache file, it's no longer relevant.
-      INFO_LOG("Deleting pipeline cache file {}", filename);
-      FileSystem::DeleteFile(filename.c_str());
-    }
-  }
-
   if (FAILED(hr))
   {
-    WARNING_LOG("CreatePipelineLibrary() failed, pipeline caching will not be available. Error: {}",
-                Error::CreateHResult(hr).GetDescription());
+    Error::SetHResult(error, "CreatePipelineLibrary() failed: ", hr);
+    return false;
+  }
+
+  // Have to keep the buffer around, DX doesn't take a copy.
+  s_pipeline_cache_data = std::move(data);
+  return true;
+}
+
+bool D3D12Device::CreatePipelineCache(const std::string& path, Error* error)
+{
+  const HRESULT hr =
+    m_device->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(m_pipeline_library.ReleaseAndGetAddressOf()));
+  if (FAILED(hr))
+  {
+    Error::SetHResult(error, "CreatePipelineLibrary() failed: ", hr);
     return false;
   }
 
   return true;
 }
 
-bool D3D12Device::GetPipelineCacheData(DynamicHeapArray<u8>* data)
+bool D3D12Device::GetPipelineCacheData(DynamicHeapArray<u8>* data, Error* error)
 {
   if (!m_pipeline_library)
     return false;
@@ -333,14 +338,19 @@ bool D3D12Device::GetPipelineCacheData(DynamicHeapArray<u8>* data)
   if (size == 0)
   {
     WARNING_LOG("Empty serialized pipeline state returned.");
-    return false;
+    return true;
   }
 
-  data->resize(size);
-  const HRESULT hr = m_pipeline_library->Serialize(data->data(), data->size());
+  PIPELINE_CACHE_HEADER header;
+  GetPipelineCacheHeader(&header);
+
+  data->resize(sizeof(PIPELINE_CACHE_HEADER) + size);
+  std::memcpy(data->data(), &header, sizeof(PIPELINE_CACHE_HEADER));
+
+  const HRESULT hr = m_pipeline_library->Serialize(data->data() + sizeof(PIPELINE_CACHE_HEADER), size);
   if (FAILED(hr))
   {
-    ERROR_LOG("Serialize() failed with HRESULT {:08X}", static_cast<unsigned>(hr));
+    Error::SetHResult(error, "Serialize() failed: ", hr);
     data->deallocate();
     return false;
   }
@@ -540,6 +550,10 @@ ID3D12GraphicsCommandList4* D3D12Device::GetInitCommandList()
 
 void D3D12Device::SubmitCommandList(bool wait_for_completion)
 {
+  DebugAssert(!InRenderPass());
+  if (m_device_was_lost) [[unlikely]]
+    return;
+
   CommandList& res = m_command_lists[m_current_command_list];
   HRESULT hr;
 
@@ -561,7 +575,8 @@ void D3D12Device::SubmitCommandList(bool wait_for_completion)
     if (FAILED(hr)) [[unlikely]]
     {
       ERROR_LOG("Closing init command list failed with HRESULT {:08X}", static_cast<unsigned>(hr));
-      Panic("TODO cannot continue");
+      m_device_was_lost = true;
+      return;
     }
   }
 
@@ -570,7 +585,8 @@ void D3D12Device::SubmitCommandList(bool wait_for_completion)
   if (FAILED(hr)) [[unlikely]]
   {
     ERROR_LOG("Closing main command list failed with HRESULT {:08X}", static_cast<unsigned>(hr));
-    Panic("TODO cannot continue");
+    m_device_was_lost = true;
+    return;
   }
 
   if (res.init_list_used)
@@ -586,7 +602,12 @@ void D3D12Device::SubmitCommandList(bool wait_for_completion)
 
   // Update fence when GPU has completed.
   hr = m_command_queue->Signal(m_fence.Get(), res.fence_counter);
-  DebugAssertMsg(SUCCEEDED(hr), "Signal fence");
+  if (FAILED(hr))
+  {
+    ERROR_LOG("Signal command queue fence failed with HRESULT {:08X}", static_cast<unsigned>(hr));
+    m_device_was_lost = true;
+    return;
+  }
 
   MoveToNextCommandList();
 
@@ -614,6 +635,9 @@ void D3D12Device::SubmitCommandListAndRestartRenderPass(const std::string_view r
 
 void D3D12Device::WaitForFence(u64 fence)
 {
+  if (m_device_was_lost) [[unlikely]]
+    return;
+
   if (m_completed_fence_value >= fence)
     return;
 
@@ -764,11 +788,6 @@ void D3D12Device::DestroyDeferredObjects(u64 fence_value)
       it.second.first->Release();
     m_cleanup_resources.pop_front();
   }
-}
-
-RenderAPI D3D12Device::GetRenderAPI() const
-{
-  return RenderAPI::D3D12;
 }
 
 bool D3D12Device::HasSurface() const
@@ -987,7 +1006,7 @@ void D3D12Device::RenderBlankFrame()
   m_current_swap_chain_buffer = ((m_current_swap_chain_buffer + 1) % static_cast<u32>(m_swap_chain_buffers.size()));
   D3D12Texture::TransitionSubresourceToState(cmdlist, swap_chain_buf.first.Get(), 0, D3D12_RESOURCE_STATE_COMMON,
                                              D3D12_RESOURCE_STATE_RENDER_TARGET);
-  cmdlist->ClearRenderTargetView(swap_chain_buf.second, s_present_clear_color.Color, 0, nullptr);
+  cmdlist->ClearRenderTargetView(swap_chain_buf.second, GSVector4::cxpr(0.0f, 0.0f, 0.0f, 1.0f).F32, 0, nullptr);
   D3D12Texture::TransitionSubresourceToState(cmdlist, swap_chain_buf.first.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET,
                                              D3D12_RESOURCE_STATE_PRESENT);
   SubmitCommandList(false);
@@ -1065,8 +1084,8 @@ bool D3D12Device::SupportsTextureFormat(GPUTexture::Format format) const
 
 std::string D3D12Device::GetDriverInfo() const
 {
-  std::string ret = fmt::format("{} ({})\n", D3DCommon::GetFeatureLevelString(m_feature_level),
-                                D3DCommon::GetFeatureLevelShaderModelString(m_feature_level));
+  std::string ret = fmt::format("{} (Shader Model {})\n", D3DCommon::GetFeatureLevelString(m_render_api_version),
+                                D3DCommon::GetShaderModelForFeatureLevelNumber(m_render_api_version));
 
   DXGI_ADAPTER_DESC desc;
   if (m_adapter && SUCCEEDED(m_adapter->GetDesc(&desc)))
@@ -1118,20 +1137,20 @@ void D3D12Device::SetVSyncMode(GPUVSyncMode mode, bool allow_present_throttle)
   }
 }
 
-bool D3D12Device::BeginPresent(bool frame_skip)
+GPUDevice::PresentResult D3D12Device::BeginPresent(u32 clear_color)
 {
   if (InRenderPass())
     EndRenderPass();
 
-  if (frame_skip)
-    return false;
+  if (m_device_was_lost) [[unlikely]]
+    return PresentResult::DeviceLost;
 
   // If we're running surfaceless, kick the command buffer so we don't run out of descriptors.
   if (!m_swap_chain)
   {
     SubmitCommandList(false);
     TrimTexturePool();
-    return false;
+    return PresentResult::SkipPresent;
   }
 
   // TODO: Check if the device was lost.
@@ -1144,15 +1163,16 @@ bool D3D12Device::BeginPresent(bool frame_skip)
   {
     Host::RunOnCPUThread([]() { Host::SetFullscreen(false); });
     TrimTexturePool();
-    return false;
+    return PresentResult::SkipPresent;
   }
 
-  BeginSwapChainRenderPass();
-  return true;
+  BeginSwapChainRenderPass(clear_color);
+  return PresentResult::OK;
 }
 
-void D3D12Device::EndPresent(bool explicit_present)
+void D3D12Device::EndPresent(bool explicit_present, u64 present_time)
 {
+  DebugAssert(present_time == 0);
   DebugAssert(InRenderPass() && m_num_current_render_targets == 0 && !m_current_depth_target);
   EndRenderPass();
 
@@ -1173,6 +1193,8 @@ void D3D12Device::EndPresent(bool explicit_present)
 void D3D12Device::SubmitPresent()
 {
   DebugAssert(m_swap_chain);
+  if (m_device_was_lost) [[unlikely]]
+    return;
 
   const UINT sync_interval = static_cast<UINT>(m_vsync_mode == GPUVSyncMode::FIFO);
   const UINT flags = (m_vsync_mode == GPUVSyncMode::Disabled && m_using_allow_tearing) ? DXGI_PRESENT_ALLOW_TEARING : 0;
@@ -1227,8 +1249,10 @@ void D3D12Device::InsertDebugMessage(const char* msg)
 #endif
 }
 
-void D3D12Device::SetFeatures(FeatureMask disabled_features)
+void D3D12Device::SetFeatures(D3D_FEATURE_LEVEL feature_level, FeatureMask disabled_features)
 {
+  m_render_api = RenderAPI::D3D12;
+  m_render_api_version = D3DCommon::GetRenderAPIVersionForFeatureLevel(feature_level);
   m_max_texture_size = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
   m_max_multisamples = 1;
   for (u32 multisamples = 2; multisamples < D3D12_MAX_MULTISAMPLE_SAMPLE_COUNT; multisamples++)
@@ -1256,6 +1280,7 @@ void D3D12Device::SetFeatures(FeatureMask disabled_features)
   m_features.partial_msaa_resolve = true;
   m_features.memory_import = false;
   m_features.explicit_present = true;
+  m_features.timed_present = false;
   m_features.gpu_timing = true;
   m_features.shader_cache = true;
   m_features.pipeline_cache = true;
@@ -1844,7 +1869,7 @@ void D3D12Device::BeginRenderPass()
     SetInitialPipelineState();
 }
 
-void D3D12Device::BeginSwapChainRenderPass()
+void D3D12Device::BeginSwapChainRenderPass(u32 clear_color)
 {
   DebugAssert(!InRenderPass());
 
@@ -1862,10 +1887,10 @@ void D3D12Device::BeginSwapChainRenderPass()
       m_current_textures[i]->TransitionToState(cmdlist, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
   }
 
-  const D3D12_RENDER_PASS_RENDER_TARGET_DESC rt_desc = {
-    swap_chain_buf.second,
-    {D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR, {s_present_clear_color}},
-    {D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE, {}}};
+  D3D12_RENDER_PASS_RENDER_TARGET_DESC rt_desc = {swap_chain_buf.second,
+                                                  {D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR, {}},
+                                                  {D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE, {}}};
+  GSVector4::store<false>(rt_desc.BeginningAccess.Clear.ClearValue.Color, GSVector4::rgba32(clear_color));
   cmdlist->BeginRenderPass(1, &rt_desc, nullptr, D3D12_RENDER_PASS_FLAG_NONE);
 
   std::memset(m_current_render_targets.data(), 0, sizeof(m_current_render_targets));

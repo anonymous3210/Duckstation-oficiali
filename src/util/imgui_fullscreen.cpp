@@ -1,7 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
-
-#define IMGUI_DEFINE_MATH_OPERATORS
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "imgui_fullscreen.h"
 #include "gpu_device.h"
@@ -43,6 +41,7 @@ namespace ImGuiFullscreen {
 using MessageDialogCallbackVariant = std::variant<InfoMessageDialogCallback, ConfirmMessageDialogCallback>;
 
 static constexpr float MENU_BACKGROUND_ANIMATION_TIME = 0.5f;
+static constexpr float SMOOTH_SCROLLING_SPEED = 3.5f;
 
 static std::optional<RGBA8Image> LoadTextureImage(std::string_view path);
 static std::shared_ptr<GPUTexture> UploadTexture(std::string_view path, const RGBA8Image& image);
@@ -90,8 +89,10 @@ ImVec4 UISecondaryTextColor;
 
 static u32 s_menu_button_index = 0;
 static u32 s_close_button_state = 0;
-static bool s_focus_reset_queued = false;
+static ImGuiDir s_has_pending_nav_move = ImGuiDir_None;
+static FocusResetType s_focus_reset_queued = FocusResetType::None;
 static bool s_light_theme = false;
+static bool s_smooth_scrolling = false;
 
 static LRUCache<std::string, std::shared_ptr<GPUTexture>> s_texture_cache(128, true);
 static std::shared_ptr<GPUTexture> s_placeholder_texture;
@@ -204,16 +205,15 @@ static std::vector<BackgroundProgressDialogData> s_background_progress_dialogs;
 static std::mutex s_background_progress_lock;
 } // namespace ImGuiFullscreen
 
-void ImGuiFullscreen::SetFonts(ImFont* standard_font, ImFont* medium_font, ImFont* large_font)
+void ImGuiFullscreen::SetFonts(ImFont* medium_font, ImFont* large_font)
 {
-  g_standard_font = standard_font;
   g_medium_font = medium_font;
   g_large_font = large_font;
 }
 
 bool ImGuiFullscreen::Initialize(const char* placeholder_image_path)
 {
-  s_focus_reset_queued = true;
+  s_focus_reset_queued = FocusResetType::ViewChanged;
   s_close_button_state = 0;
 
   s_placeholder_texture = LoadTexture(placeholder_image_path);
@@ -278,9 +278,24 @@ void ImGuiFullscreen::Shutdown()
   s_message_dialog_callback = {};
 }
 
+void ImGuiFullscreen::SetSmoothScrolling(bool enabled)
+{
+  s_smooth_scrolling = enabled;
+}
+
 const std::shared_ptr<GPUTexture>& ImGuiFullscreen::GetPlaceholderTexture()
 {
   return s_placeholder_texture;
+}
+
+std::unique_ptr<GPUTexture> ImGuiFullscreen::CreateTextureFromImage(const RGBA8Image& image)
+{
+  std::unique_ptr<GPUTexture> ret =
+    g_gpu_device->CreateTexture(image.GetWidth(), image.GetHeight(), 1, 1, 1, GPUTexture::Type::Texture,
+                                GPUTexture::Format::RGBA8, image.GetPixels(), image.GetPitch());
+  if (!ret) [[unlikely]]
+    ERROR_LOG("Failed to upload {}x{} RGBA8Image to GPU", image.GetWidth(), image.GetHeight());
+  return ret;
 }
 
 std::optional<RGBA8Image> ImGuiFullscreen::LoadTextureImage(std::string_view path)
@@ -307,7 +322,7 @@ std::optional<RGBA8Image> ImGuiFullscreen::LoadTextureImage(std::string_view pat
   }
   else
   {
-    std::optional<std::vector<u8>> data = Host::ReadResourceFile(path, true);
+    std::optional<DynamicHeapArray<u8>> data = Host::ReadResourceFile(path, true);
     if (data.has_value())
     {
       image = RGBA8Image();
@@ -569,29 +584,51 @@ void ImGuiFullscreen::PopResetLayout()
   ImGui::PopStyleVar(12);
 }
 
-void ImGuiFullscreen::QueueResetFocus()
+void ImGuiFullscreen::QueueResetFocus(FocusResetType type)
 {
-  s_focus_reset_queued = true;
+  s_focus_reset_queued = type;
   s_close_button_state = 0;
 }
 
 bool ImGuiFullscreen::ResetFocusHere()
 {
-  if (!s_focus_reset_queued)
+  if (s_focus_reset_queued == FocusResetType::None)
     return false;
 
   // don't take focus from dialogs
-  if (ImGui::FindBlockingModal(ImGui::GetCurrentWindow()))
+  ImGuiWindow* window = ImGui::GetCurrentWindow();
+  if (ImGui::FindBlockingModal(window))
     return false;
 
-  s_focus_reset_queued = false;
+  s_focus_reset_queued = FocusResetType::None;
+
+  // Set the flag that we drew an active/hovered item active for a frame, because otherwise there's one frame where
+  // there'll be no frame drawn, which will cancel the animation. Also set the appearing flag, so that the default
+  // focus set does actually go through.
+  if (!GImGui->NavDisableHighlight && GImGui->NavDisableMouseHover)
+  {
+    window->Appearing = true;
+    s_has_hovered_menu_item = s_had_hovered_menu_item;
+  }
+
   ImGui::SetWindowFocus();
+  ImGui::NavInitWindow(window, true);
 
   // only do the active selection magic when we're using keyboard/gamepad
   return (GImGui->NavInputSource == ImGuiInputSource_Keyboard || GImGui->NavInputSource == ImGuiInputSource_Gamepad);
 }
 
 bool ImGuiFullscreen::IsFocusResetQueued()
+{
+  return (s_focus_reset_queued != FocusResetType::None);
+}
+
+bool ImGuiFullscreen::IsFocusResetFromWindowChange()
+{
+  return (s_focus_reset_queued != FocusResetType::None && s_focus_reset_queued != FocusResetType::PopupClosed);
+}
+
+ImGuiFullscreen::FocusResetType ImGuiFullscreen::GetQueuedFocusResetType()
 {
   return s_focus_reset_queued;
 }
@@ -607,6 +644,8 @@ void ImGuiFullscreen::ForceKeyNavEnabled()
 
 bool ImGuiFullscreen::WantsToCloseMenu()
 {
+  ImGuiContext& g = *GImGui;
+
   // Wait for the Close button to be released, THEN pressed
   if (s_close_button_state == 0)
   {
@@ -732,6 +771,7 @@ bool ImGuiFullscreen::BeginFullscreenWindow(const ImVec2& position, const ImVec2
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, LayoutScale(padding));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, LayoutScale(rounding));
+  ImGui::PushStyleVar(ImGuiStyleVar_ScrollSmooth, s_smooth_scrolling ? SMOOTH_SCROLLING_SPEED : 1.0f);
 
   return ImGui::Begin(name, nullptr,
                       ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
@@ -741,7 +781,7 @@ bool ImGuiFullscreen::BeginFullscreenWindow(const ImVec2& position, const ImVec2
 void ImGuiFullscreen::EndFullscreenWindow()
 {
   ImGui::End();
-  ImGui::PopStyleVar(3);
+  ImGui::PopStyleVar(4);
   ImGui::PopStyleColor();
 }
 
@@ -858,6 +898,32 @@ void ImGuiFullscreen::BeginMenuButtons(u32 num_items, float y_align, float x_pad
                                        float item_height)
 {
   s_menu_button_index = 0;
+
+  // If we're scrolling up and down, it's possible that the first menu item won't be enabled.
+  // If so, track when the scroll happens, and if we moved to a new ID. If not, scroll the parent window.
+  if (GImGui->NavMoveDir != ImGuiDir_None)
+  {
+    s_has_pending_nav_move = GImGui->NavMoveDir;
+  }
+  else if (s_has_pending_nav_move != ImGuiDir_None)
+  {
+    if (GImGui->NavJustMovedToId == 0)
+    {
+      switch (s_has_pending_nav_move)
+      {
+        case ImGuiDir_Up:
+          ImGui::SetScrollY(std::max(ImGui::GetScrollY() - item_height, 0.0f));
+          break;
+        case ImGuiDir_Down:
+          ImGui::SetScrollY(std::min(ImGui::GetScrollY() + item_height, ImGui::GetScrollMaxY()));
+          break;
+        default:
+          break;
+      }
+    }
+
+    s_has_pending_nav_move = ImGuiDir_None;
+  }
 
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, LayoutScale(x_padding, y_padding));
   ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
@@ -986,7 +1052,7 @@ void ImGuiFullscreen::DrawMenuButtonFrame(const ImVec2& p_min, const ImVec2& p_m
   ImVec2 frame_max = p_max;
 
   const ImGuiIO& io = ImGui::GetIO();
-  if (io.NavVisible)
+  if (s_smooth_scrolling && io.NavVisible)
   {
     if (!s_had_hovered_menu_item || io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)
     {
@@ -1106,11 +1172,29 @@ bool ImGuiFullscreen::MenuHeadingButton(const char* title, const char* value /*=
 
 bool ImGuiFullscreen::ActiveButton(const char* title, bool is_active, bool enabled, float height, ImFont* font)
 {
+  return ActiveButtonWithRightText(title, nullptr, is_active, enabled, height, font);
+}
+
+bool ImGuiFullscreen::DefaultActiveButton(const char* title, bool is_active, bool enabled /* = true */,
+                                          float height /* = LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY */,
+                                          ImFont* font /* = g_large_font */)
+{
+  const bool result = ActiveButtonWithRightText(title, nullptr, is_active, enabled, height, font);
+  ImGui::SetItemDefaultFocus();
+  return result;
+}
+
+bool ImGuiFullscreen::ActiveButtonWithRightText(const char* title, const char* right_title, bool is_active,
+                                                bool enabled, float height, ImFont* font)
+{
   if (is_active)
   {
+    // don't draw over a prerendered border
+    const float border_size = ImGui::GetStyle().FrameBorderSize;
+    const ImVec2 border_size_v = ImVec2(border_size, border_size);
     ImVec2 pos, size;
     GetMenuButtonFrameBounds(height, &pos, &size);
-    ImGui::RenderFrame(pos, pos + size, ImGui::GetColorU32(UIPrimaryColor), false);
+    ImGui::RenderFrame(pos + border_size_v, pos + size - border_size_v, ImGui::GetColorU32(UIPrimaryColor), false);
   }
 
   ImRect bb;
@@ -1126,6 +1210,15 @@ bool ImGuiFullscreen::ActiveButton(const char* title, bool is_active, bool enabl
 
   ImGui::PushFont(font);
   ImGui::RenderTextClipped(title_bb.Min, title_bb.Max, title, nullptr, nullptr, ImVec2(0.0f, 0.0f), &title_bb);
+
+  if (right_title && *right_title)
+  {
+    const ImVec2 right_text_size = font->CalcTextSizeA(font->FontSize, title_bb.GetWidth(), 0.0f, right_title);
+    const ImVec2 right_text_start = ImVec2(title_bb.Max.x - right_text_size.x, title_bb.Min.y);
+    ImGui::RenderTextClipped(right_text_start, title_bb.Max, right_title, nullptr, &right_text_size, ImVec2(0.0f, 0.0f),
+                             &title_bb);
+  }
+
   ImGui::PopFont();
 
   if (!enabled)
@@ -1907,7 +2000,8 @@ bool ImGuiFullscreen::NavTab(const char* title, bool is_active, bool enabled /* 
     hovered ? ImGui::GetColorU32(held ? ImGuiCol_ButtonActive : ImGuiCol_ButtonHovered, 1.0f) :
               ImGui::GetColorU32(is_active ? background : ImVec4(background.x, background.y, background.z, 0.5f));
 
-  DrawMenuButtonFrame(bb.Min, bb.Max, col, true, 0.0f);
+  if (hovered)
+    DrawMenuButtonFrame(bb.Min, bb.Max, col, true, 0.0f);
 
   if (is_active)
   {
@@ -2117,13 +2211,16 @@ void ImGuiFullscreen::OpenFileSelector(std::string_view title, bool select_direc
   s_file_selector_filters = std::move(filters);
 
   SetFileSelectorDirectory(std::move(initial_directory));
-  QueueResetFocus();
+  QueueResetFocus(FocusResetType::PopupOpened);
 }
 
 void ImGuiFullscreen::CloseFileSelector()
 {
   if (!s_file_selector_open)
     return;
+
+  if (ImGui::IsPopupOpen(s_file_selector_title.c_str(), 0))
+    ImGui::ClosePopupToLevel(GImGui->OpenPopupStack.Size - 1, true);
 
   s_file_selector_open = false;
   s_file_selector_directory = false;
@@ -2133,7 +2230,7 @@ void ImGuiFullscreen::CloseFileSelector()
   std::string().swap(s_file_selector_current_directory);
   s_file_selector_items.clear();
   ImGui::CloseCurrentPopup();
-  QueueResetFocus();
+  QueueResetFocus(FocusResetType::PopupClosed);
 }
 
 void ImGuiFullscreen::DrawFileSelector()
@@ -2164,13 +2261,13 @@ void ImGuiFullscreen::DrawFileSelector()
   {
     ImGui::PushStyleColor(ImGuiCol_Text, UIBackgroundTextColor);
 
-    BeginMenuButtons();
     ResetFocusHere();
+    BeginMenuButtons();
 
     if (!s_file_selector_current_directory.empty())
     {
-      MenuButton(fmt::format(ICON_FA_FOLDER_OPEN " {}", s_file_selector_current_directory).c_str(), nullptr, false,
-                 LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY);
+      MenuButton(SmallString::from_format(ICON_FA_FOLDER_OPEN " {}", s_file_selector_current_directory).c_str(),
+                 nullptr, false, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY);
     }
 
     if (s_file_selector_directory && !s_file_selector_current_directory.empty())
@@ -2212,7 +2309,7 @@ void ImGuiFullscreen::DrawFileSelector()
     else
     {
       SetFileSelectorDirectory(std::move(selected->full_path));
-      QueueResetFocus();
+      QueueResetFocus(FocusResetType::Other);
     }
   }
   else if (directory_selected)
@@ -2233,7 +2330,7 @@ void ImGuiFullscreen::DrawFileSelector()
                                               "  <Parent Directory>")
       {
         SetFileSelectorDirectory(std::move(s_file_selector_items.front().full_path));
-        QueueResetFocus();
+        QueueResetFocus(FocusResetType::Other);
       }
     }
   }
@@ -2255,7 +2352,7 @@ void ImGuiFullscreen::OpenChoiceDialog(std::string_view title, bool checkable, C
   s_choice_dialog_title = fmt::format("{}##choice_dialog", title);
   s_choice_dialog_options = std::move(options);
   s_choice_dialog_callback = std::move(callback);
-  QueueResetFocus();
+  QueueResetFocus(FocusResetType::PopupOpened);
 }
 
 void ImGuiFullscreen::CloseChoiceDialog()
@@ -2263,12 +2360,15 @@ void ImGuiFullscreen::CloseChoiceDialog()
   if (!s_choice_dialog_open)
     return;
 
+  if (ImGui::IsPopupOpen(s_choice_dialog_title.c_str(), 0))
+    ImGui::ClosePopupToLevel(GImGui->OpenPopupStack.Size - 1, true);
+
   s_choice_dialog_open = false;
   s_choice_dialog_checkable = false;
   std::string().swap(s_choice_dialog_title);
   ChoiceDialogOptions().swap(s_choice_dialog_options);
   ChoiceDialogCallback().swap(s_choice_dialog_callback);
-  QueueResetFocus();
+  QueueResetFocus(FocusResetType::PopupClosed);
 }
 
 void ImGuiFullscreen::DrawChoiceDialog()
@@ -2297,7 +2397,7 @@ void ImGuiFullscreen::DrawChoiceDialog()
                           ImGuiCond_Always, ImVec2(0.5f, 0.5f));
   ImGui::OpenPopup(s_choice_dialog_title.c_str());
 
-  bool is_open = !WantsToCloseMenu();
+  bool is_open = true;
   s32 choice = -1;
 
   if (ImGui::BeginPopupModal(s_choice_dialog_title.c_str(), &is_open,
@@ -2305,8 +2405,8 @@ void ImGuiFullscreen::DrawChoiceDialog()
   {
     ImGui::PushStyleColor(ImGuiCol_Text, UIBackgroundTextColor);
 
-    BeginMenuButtons();
     ResetFocusHere();
+    BeginMenuButtons();
 
     if (s_choice_dialog_checkable)
     {
@@ -2314,8 +2414,8 @@ void ImGuiFullscreen::DrawChoiceDialog()
       {
         auto& option = s_choice_dialog_options[i];
 
-        const std::string title(
-          fmt::format("{0} {1}", option.second ? ICON_FA_CHECK_SQUARE : ICON_FA_SQUARE, option.first));
+        const SmallString title =
+          SmallString::from_format("{0} {1}", option.second ? ICON_FA_CHECK_SQUARE : ICON_FA_SQUARE, option.first);
         if (MenuButton(title.c_str(), nullptr, true, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
         {
           choice = i;
@@ -2328,12 +2428,8 @@ void ImGuiFullscreen::DrawChoiceDialog()
       for (s32 i = 0; i < static_cast<s32>(s_choice_dialog_options.size()); i++)
       {
         auto& option = s_choice_dialog_options[i];
-        std::string title;
-        if (option.second)
-          title += ICON_FA_CHECK " ";
-        title += option.first;
-
-        if (ActiveButton(title.c_str(), option.second, true, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
+        if (ActiveButtonWithRightText(option.first.c_str(), option.second ? ICON_FA_CHECK : nullptr, option.second,
+                                      true, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
         {
           choice = i;
           for (s32 j = 0; j < static_cast<s32>(s_choice_dialog_options.size()); j++)
@@ -2348,14 +2444,12 @@ void ImGuiFullscreen::DrawChoiceDialog()
 
     ImGui::EndPopup();
   }
-  else
-  {
-    is_open = false;
-  }
 
   ImGui::PopStyleColor(3);
   ImGui::PopStyleVar(3);
   ImGui::PopFont();
+
+  is_open &= !WantsToCloseMenu();
 
   if (choice >= 0)
   {
@@ -2388,7 +2482,7 @@ void ImGuiFullscreen::OpenInputStringDialog(std::string title, std::string messa
   s_input_dialog_caption = std::move(caption);
   s_input_dialog_ok_text = std::move(ok_button_text);
   s_input_dialog_callback = std::move(callback);
-  QueueResetFocus();
+  QueueResetFocus(FocusResetType::PopupOpened);
 }
 
 void ImGuiFullscreen::DrawInputDialog()
@@ -2474,6 +2568,9 @@ void ImGuiFullscreen::CloseInputDialog()
   if (!s_input_dialog_open)
     return;
 
+  if (ImGui::IsPopupOpen(s_input_dialog_title.c_str(), 0))
+    ImGui::ClosePopupToLevel(GImGui->OpenPopupStack.Size - 1, true);
+
   s_input_dialog_open = false;
   s_input_dialog_title = {};
   s_input_dialog_message = {};
@@ -2500,7 +2597,7 @@ void ImGuiFullscreen::OpenConfirmMessageDialog(std::string title, std::string me
   s_message_dialog_callback = std::move(callback);
   s_message_dialog_buttons[0] = std::move(yes_button_text);
   s_message_dialog_buttons[1] = std::move(no_button_text);
-  QueueResetFocus();
+  QueueResetFocus(FocusResetType::PopupOpened);
 }
 
 void ImGuiFullscreen::OpenInfoMessageDialog(std::string title, std::string message, InfoMessageDialogCallback callback,
@@ -2513,7 +2610,7 @@ void ImGuiFullscreen::OpenInfoMessageDialog(std::string title, std::string messa
   s_message_dialog_message = std::move(message);
   s_message_dialog_callback = std::move(callback);
   s_message_dialog_buttons[0] = std::move(button_text);
-  QueueResetFocus();
+  QueueResetFocus(FocusResetType::PopupOpened);
 }
 
 void ImGuiFullscreen::OpenMessageDialog(std::string title, std::string message, MessageDialogCallback callback,
@@ -2529,7 +2626,7 @@ void ImGuiFullscreen::OpenMessageDialog(std::string title, std::string message, 
   s_message_dialog_buttons[0] = std::move(first_button_text);
   s_message_dialog_buttons[1] = std::move(second_button_text);
   s_message_dialog_buttons[2] = std::move(third_button_text);
-  QueueResetFocus();
+  QueueResetFocus(FocusResetType::PopupOpened);
 }
 
 void ImGuiFullscreen::CloseMessageDialog()
@@ -2537,12 +2634,15 @@ void ImGuiFullscreen::CloseMessageDialog()
   if (!s_message_dialog_open)
     return;
 
+  if (ImGui::IsPopupOpen(s_message_dialog_title.c_str(), 0))
+    ImGui::ClosePopupToLevel(GImGui->OpenPopupStack.Size - 1, true);
+
   s_message_dialog_open = false;
   s_message_dialog_title = {};
   s_message_dialog_message = {};
   s_message_dialog_buttons = {};
   s_message_dialog_callback = {};
-  QueueResetFocus();
+  QueueResetFocus(FocusResetType::PopupClosed);
 }
 
 void ImGuiFullscreen::DrawMessageDialog()
@@ -2574,8 +2674,8 @@ void ImGuiFullscreen::DrawMessageDialog()
 
   if (ImGui::BeginPopupModal(win_id, &is_open, flags))
   {
-    BeginMenuButtons();
     ResetFocusHere();
+    BeginMenuButtons();
 
     ImGui::TextWrapped("%s", s_message_dialog_message.c_str());
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + LayoutScale(20.0f));

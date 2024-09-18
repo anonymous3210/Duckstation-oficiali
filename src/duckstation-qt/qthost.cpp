@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "qthost.h"
 #include "autoupdaterdialog.h"
@@ -11,6 +11,7 @@
 #include "setupwizarddialog.h"
 
 #include "core/achievements.h"
+#include "core/bus.h"
 #include "core/cheats.h"
 #include "core/controller.h"
 #include "core/fullscreen_ui.h"
@@ -45,7 +46,7 @@
 
 #include "scmversion/scmversion.h"
 
-#include "imgui.h"
+#include "fmt/format.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDateTime>
@@ -166,6 +167,12 @@ bool QtHost::PerformEarlyHardwareChecks()
 
 bool QtHost::EarlyProcessStartup()
 {
+  // Config-based RAIntegration switch must happen before the main window is displayed.
+#ifdef ENABLE_RAINTEGRATION
+  if (!Achievements::IsUsingRAIntegration() && Host::GetBaseBoolSettingValue("Cheevos", "UseRAIntegration", false))
+    Achievements::SwitchToRAIntegration();
+#endif
+
   Error error;
   if (System::Internal::ProcessStartup(&error)) [[likely]]
     return true;
@@ -465,13 +472,10 @@ bool QtHost::InitializeConfig(std::string settings_filename)
   MigrateSettings();
 
   // We need to create the console window early, otherwise it appears in front of the main window.
-  if (!Log::IsConsoleOutputEnabled() &&
-      s_base_settings_interface->GetBoolValue("Logging", "LogToConsole", Settings::DEFAULT_LOG_TO_CONSOLE))
-  {
+  if (!Log::IsConsoleOutputEnabled() && s_base_settings_interface->GetBoolValue("Logging", "LogToConsole", false))
     Log::SetConsoleOutputParams(true, s_base_settings_interface->GetBoolValue("Logging", "LogTimestamps", true));
-  }
 
-  InstallTranslator(nullptr);
+  UpdateApplicationLanguage(nullptr);
   return true;
 }
 
@@ -493,7 +497,7 @@ bool QtHost::SetCriticalFolders()
   // the resources directory should exist, bail out if not
   const std::string rcc_path = Path::Combine(EmuFolders::Resources, "duckstation-qt.rcc");
   if (!FileSystem::FileExists(rcc_path.c_str()) || !QResource::registerResource(QString::fromStdString(rcc_path)) ||
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
       !FileSystem::DirectoryExists(EmuFolders::Resources.c_str())
 #else
       !FileSystem::IsRealDirectory(EmuFolders::Resources.c_str())
@@ -744,6 +748,20 @@ void EmuThread::updateEmuFolders()
   }
 
   EmuFolders::Update();
+}
+
+void EmuThread::updateControllerSettings()
+{
+  if (!isOnThread())
+  {
+    QMetaObject::invokeMethod(this, &EmuThread::updateControllerSettings, Qt::QueuedConnection);
+    return;
+  }
+
+  if (!System::IsValid())
+    return;
+
+  System::UpdateControllerSettings();
 }
 
 void EmuThread::startFullscreenUI()
@@ -1474,7 +1492,7 @@ void EmuThread::startDumpingAudio()
     return;
   }
 
-  System::StartDumpingAudio();
+  // System::StartDumpingAudio();
 }
 
 void EmuThread::stopDumpingAudio()
@@ -1485,7 +1503,7 @@ void EmuThread::stopDumpingAudio()
     return;
   }
 
-  System::StopDumpingAudio();
+  // System::StopDumpingAudio();
 }
 
 void EmuThread::singleStepCPU()
@@ -1777,7 +1795,7 @@ void EmuThread::run()
       System::Internal::IdlePollUpdate();
       if (g_gpu_device)
       {
-        System::PresentDisplay(false, false);
+        System::PresentDisplay(false, 0);
         if (!g_gpu_device->IsVSyncModeBlocking())
           g_gpu_device->ThrottlePresentation();
       }
@@ -1929,10 +1947,10 @@ bool Host::ResourceFileExists(std::string_view filename, bool allow_override)
   return FileSystem::FileExists(path.c_str());
 }
 
-std::optional<std::vector<u8>> Host::ReadResourceFile(std::string_view filename, bool allow_override)
+std::optional<DynamicHeapArray<u8>> Host::ReadResourceFile(std::string_view filename, bool allow_override)
 {
   const std::string path = QtHost::GetResourcePath(filename, allow_override);
-  std::optional<std::vector<u8>> ret(FileSystem::ReadBinaryFile(path.c_str()));
+  std::optional<DynamicHeapArray<u8>> ret(FileSystem::ReadBinaryFile(path.c_str()));
   if (!ret.has_value())
     ERROR_LOG("Failed to read resource file '{}'", filename);
   return ret;
@@ -2056,6 +2074,16 @@ void Host::OnGameChanged(const std::string& disc_path, const std::string& game_s
 {
   emit g_emu_thread->runningGameChanged(QString::fromStdString(disc_path), QString::fromStdString(game_serial),
                                         QString::fromStdString(game_name));
+}
+
+void Host::OnMediaCaptureStarted()
+{
+  emit g_emu_thread->mediaCaptureStarted();
+}
+
+void Host::OnMediaCaptureStopped()
+{
+  emit g_emu_thread->mediaCaptureStopped();
 }
 
 void Host::SetMouseMode(bool relative, bool hide_cursor)
@@ -2513,7 +2541,7 @@ bool QtHost::RunSetupWizard()
 
 int main(int argc, char* argv[])
 {
-  CrashHandler::Install();
+  CrashHandler::Install(&Bus::CleanupMemoryMap);
 
   QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
   QtHost::RegisterTypes();
@@ -2538,7 +2566,7 @@ int main(int argc, char* argv[])
     AutoUpdaterDialog::cleanupAfterUpdate();
 
   // Set theme before creating any windows.
-  MainWindow::updateApplicationTheme();
+  QtHost::UpdateApplicationTheme();
 
   // Start logging early.
   LogWindow::updateSettings();

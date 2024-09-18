@@ -83,8 +83,8 @@ function(detect_architecture)
           AND CMAKE_SIZEOF_VOID_P EQUAL 4))
     message(STATUS "Building ARM32 binaries.")
     set(CPU_ARCH_ARM32 TRUE PARENT_SCOPE)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -marm -march=armv7-a" PARENT_SCOPE)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -marm -march=armv7-a" PARENT_SCOPE)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -marm -march=armv7-a -mfpu=neon-vfpv4" PARENT_SCOPE)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -marm -march=armv7-a -mfpu=neon-vfpv4" PARENT_SCOPE)
   elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "riscv64")
     message(STATUS "Building RISC-V 64 binaries.")
     set(CPU_ARCH_RISCV64 TRUE PARENT_SCOPE)
@@ -199,4 +199,31 @@ int main() {
     message(STATUS "Host cache line size: ${detect_cache_line_size_output}")
     set(HOST_CACHE_LINE_SIZE ${detect_cache_line_size_output} CACHE STRING "Reported host cache line size")
   endif()
+endfunction()
+
+function(get_scm_version)
+  if(SCM_VERSION)
+    return()
+  endif()
+
+  find_package(Git)
+  if(EXISTS "${PROJECT_SOURCE_DIR}/.git" AND GIT_FOUND)
+    execute_process(
+      COMMAND ${GIT_EXECUTABLE} describe --dirty
+      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+      OUTPUT_VARIABLE LOCAL_SCM_VERSION
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+  endif()
+  if(NOT LOCAL_SCM_VERSION)
+    set(SCM_VERSION "unknown" PARENT_SCOPE)
+  else()
+    set(SCM_VERSION ${LOCAL_SCM_VERSION} PARENT_SCOPE)
+  endif()
+endfunction()
+
+function(install_imported_dep_library name)
+  get_target_property(SONAME "${name}" IMPORTED_SONAME_RELEASE)
+  get_target_property(LOCATION "${name}" IMPORTED_LOCATION_RELEASE)
+  install(FILES "${LOCATION}" RENAME "${SONAME}" DESTINATION "${CMAKE_INSTALL_PREFIX}")
 endfunction()

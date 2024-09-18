@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
+
 #include "gpu_types.h"
 #include "timers.h"
-#include "types.h"
 #include "timing_event.h"
+#include "types.h"
 
+#include "util/gpu_device.h"
 #include "util/gpu_texture.h"
 
 #include "common/bitfield.h"
@@ -28,6 +30,7 @@ class StateWrapper;
 class GPUDevice;
 class GPUTexture;
 class GPUPipeline;
+class MediaCapture;
 
 struct Settings;
 
@@ -134,13 +137,13 @@ public:
   /// Returns true if scanout should be interlaced.
   ALWAYS_INLINE bool IsInterlacedDisplayEnabled() const
   {
-    return (!m_force_progressive_scan) && m_GPUSTAT.vertical_interlace;
+    return (!m_force_progressive_scan && m_GPUSTAT.vertical_interlace);
   }
 
   /// Returns true if interlaced rendering is enabled and force progressive scan is disabled.
   ALWAYS_INLINE bool IsInterlacedRenderingEnabled() const
   {
-    return (!m_force_progressive_scan) && m_GPUSTAT.SkipDrawingToActiveField();
+    return (!m_force_progressive_scan && m_GPUSTAT.SkipDrawingToActiveField());
   }
 
   /// Returns true if we're in PAL mode, otherwise false if NTSC.
@@ -201,6 +204,10 @@ public:
   ALWAYS_INLINE s32 GetCRTCDisplayWidth() const { return m_crtc_state.display_width; }
   ALWAYS_INLINE s32 GetCRTCDisplayHeight() const { return m_crtc_state.display_height; }
 
+  // Ticks for hblank/vblank.
+  void CRTCTickEvent(TickCount ticks);
+  void CommandTickEvent(TickCount ticks);
+
   // Dumps raw VRAM to a file.
   bool DumpVRAMToFile(const char* filename);
 
@@ -208,21 +215,30 @@ public:
   virtual void FlushRender() = 0;
 
   /// Helper function for computing the draw rectangle in a larger window.
-  GSVector4i CalculateDrawRect(s32 window_width, s32 window_height, bool apply_rotation, bool apply_aspect_ratio) const;
+  void CalculateDrawRect(s32 window_width, s32 window_height, bool apply_rotation, bool apply_aspect_ratio,
+                         GSVector4i* display_rect, GSVector4i* draw_rect) const;
+
+  /// Helper function for computing screenshot bounds.
+  void CalculateScreenshotSize(DisplayScreenshotMode mode, u32* width, u32* height, GSVector4i* display_rect,
+                               GSVector4i* draw_rect) const;
 
   /// Helper function to save current display texture to PNG.
   bool WriteDisplayTextureToFile(std::string filename, bool compress_on_thread = false);
 
   /// Renders the display, optionally with postprocessing to the specified image.
-  bool RenderScreenshotToBuffer(u32 width, u32 height, const GSVector4i draw_rect, bool postfx,
-                                std::vector<u32>* out_pixels, u32* out_stride, GPUTexture::Format* out_format);
+  bool RenderScreenshotToBuffer(u32 width, u32 height, const GSVector4i display_rect, const GSVector4i draw_rect,
+                                bool postfx, std::vector<u32>* out_pixels, u32* out_stride,
+                                GPUTexture::Format* out_format);
 
   /// Helper function to save screenshot to PNG.
   bool RenderScreenshotToFile(std::string filename, DisplayScreenshotMode mode, u8 quality, bool compress_on_thread,
                               bool show_osd_message);
 
   /// Draws the current display texture, with any post-processing.
-  bool PresentDisplay();
+  GPUDevice::PresentResult PresentDisplay();
+
+  /// Sends the current frame to media capture.
+  bool SendDisplayToMediaCapture(MediaCapture* cap);
 
   /// Reads the CLUT from the specified coordinates, accounting for wrap-around.
   static void ReadCLUT(u16* dest, GPUTexturePaletteReg reg, bool clut_is_8bit);
@@ -268,14 +284,17 @@ public:
   void UpdateDMARequest();
   void UpdateGPUIdle();
 
+ dreams
   // Ticks for hblank/vblank.
   void CRTCTickEvent(TickCount ticks);
   void CommandTickEvent(TickCount ticks);
   void DoPartialScanout();
 
-  /// Returns 0 if the currently-displayed field is on odd lines (1,3,5,...) or 1 if even (2,4,6,...).
-  ALWAYS_INLINE u32 GetInterlacedDisplayField() const { return ZeroExtend32(m_crtc_state.interlaced_field); }
 
+ master
+  /// Returns 0 if the currently-displayed field is on odd lines (1,3,5,...) or 1 if even (2,4,6,...).
+  ALWAYS_INLINE u32 GetInterlacedDisplayField();
+  ALWAYS_INLINE u32 GetActiveLineLSB() const;
   /// Returns 0 if the currently-displayed field is on an even line in VRAM, otherwise 1.
   ALWAYS_INLINE u32 GetActiveLineLSB() const { return ZeroExtend32(m_crtc_state.active_line_lsb); }
 
@@ -347,15 +366,46 @@ public:
 
     AddCommandTicks(pixels);
   }
-  ALWAYS_INLINE_RELEASE void AddDrawRectangleTicks(const GSVector4i clamped_rect, bool textured,
-                                                   bool semitransparent)
+  ALWAYS_INLINE_RELEASE void AddDrawRectangleTicks(const GSVector4i clamped_rect, bool textured, bool semitransparent)
   {
     u32 drawn_width = clamped_rect.width();
     u32 drawn_height = clamped_rect.height();
 
     u32 ticks_per_row = drawn_width;
     if (textured)
-      ticks_per_row += drawn_width;
+    {
+      switch (m_draw_mode.mode_reg.texture_mode)
+      {
+        case GPUTextureMode::Palette4Bit:
+          ticks_per_row += drawn_width;
+          break;
+
+        case GPUTextureMode::Palette8Bit:
+        {
+          // Texture cache reload every 2 pixels, reads in 8 bytes (assuming 4x2). Cache only reloads if the
+          // draw width is greater than 32, otherwise the cache hits between rows.
+          if (drawn_width >= 32)
+            ticks_per_row += (drawn_width / 4) * 8;
+          else
+            ticks_per_row += drawn_width;
+        }
+        break;
+
+        case GPUTextureMode::Direct16Bit:
+        case GPUTextureMode::Reserved_Direct16Bit:
+        {
+          // Same as above, except with 2x2 blocks instead of 4x2.
+          if (drawn_width >= 32)
+            ticks_per_row += (drawn_width / 2) * 8;
+          else
+            ticks_per_row += drawn_width;
+        }
+        break;
+
+          DefaultCaseIsUnreachable()
+      }
+    }
+
     if (semitransparent || m_GPUSTAT.check_mask_before_draw)
       ticks_per_row += (drawn_width + 1u) / 2u;
     if (m_GPUSTAT.SkipDrawingToActiveField())
@@ -373,9 +423,6 @@ public:
 
     AddCommandTicks(std::max(drawn_width, drawn_height));
   }
-
-  TimingEvent m_crtc_tick_event;
-  TimingEvent m_command_tick_event;
 
   union GPUSTAT
   {
@@ -470,7 +517,7 @@ public:
   bool m_set_texture_disable_mask = false;
   bool m_drawing_area_changed = false;
   bool m_force_progressive_scan = false;
-  bool m_force_ntsc_timings = false;
+  ForceVideoTimingMode m_force_frame_timings = ForceVideoTimingMode::Disabled;
 
   struct CRTCState
   {
@@ -598,7 +645,8 @@ public:
   void SetDisplayTexture(GPUTexture* texture, GPUTexture* depth_texture, s32 view_x, s32 view_y, s32 view_width,
                          s32 view_height);
 
-  bool RenderDisplay(GPUTexture* target, const GSVector4i draw_rect, bool postfx);
+  GPUDevice::PresentResult RenderDisplay(GPUTexture* target, const GSVector4i display_rect, const GSVector4i draw_rect,
+                                         bool postfx);
 
   bool Deinterlace(u32 field, u32 line_skip);
   bool DeinterlaceExtractField(u32 dst_bufidx, GPUTexture* src, u32 x, u32 y, u32 width, u32 height, u32 line_skip);

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "host.h"
 #include "imgui_manager.h"
@@ -14,11 +14,6 @@
 
 #include "cubeb/cubeb.h"
 #include "fmt/format.h"
-
-#ifdef _WIN32
-#include "common/windows_headers.h"
-#include <objbase.h>
-#endif
 
 Log_SetChannel(CubebAudioStream);
 
@@ -44,10 +39,6 @@ private:
 
   cubeb* m_context = nullptr;
   cubeb_stream* stream = nullptr;
-
-#ifdef _WIN32
-  bool m_com_initialized_by_us = false;
-#endif
 };
 } // namespace
 
@@ -111,14 +102,6 @@ void CubebAudioStream::DestroyContextAndStream()
     cubeb_destroy(m_context);
     m_context = nullptr;
   }
-
-#ifdef _WIN32
-  if (m_com_initialized_by_us)
-  {
-    CoUninitialize();
-    m_com_initialized_by_us = false;
-  }
-#endif
 }
 
 bool CubebAudioStream::Initialize(const char* driver_name, const char* device_name, Error* error)

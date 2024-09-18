@@ -1,13 +1,15 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
+
 #include "types.h"
 #include <charconv>
 #include <cstddef>
 #include <cstring>
 #include <iomanip>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -204,6 +206,15 @@ inline std::string ToChars(bool value, int base)
 std::optional<std::vector<u8>> DecodeHex(const std::string_view str);
 std::string EncodeHex(const u8* data, int length);
 
+/// Returns true if the character is a hexadecimal digit.
+template<typename T>
+ALWAYS_INLINE static bool IsHexDigit(T ch)
+{
+  return ((ch >= static_cast<T>('a') && ch <= static_cast<T>('f')) ||
+          (ch >= static_cast<T>('A') && ch <= static_cast<T>('F')) ||
+          (ch >= static_cast<T>('0') && ch <= static_cast<T>('9')));
+}
+
 /// StartsWith/EndsWith variants which aren't case sensitive.
 ALWAYS_INLINE static bool StartsWithNoCase(const std::string_view str, const std::string_view prefix)
 {
@@ -262,6 +273,9 @@ void ReplaceAll(std::string* subject, const char search, const char replacement)
 /// Parses an assignment string (Key = Value) into its two components.
 bool ParseAssignmentString(const std::string_view str, std::string_view* key, std::string_view* value);
 
+/// Unicode replacement character.
+static constexpr char32_t UNICODE_REPLACEMENT_CHARACTER = 0xFFFD;
+
 /// Appends a UTF-16/UTF-32 codepoint to a UTF-8 string.
 void EncodeAndAppendUTF8(std::string& s, char32_t ch);
 
@@ -274,6 +288,9 @@ size_t DecodeUTF8(const std::string& str, size_t offset, char32_t* ch);
 // Replaces the end of a string with ellipsis if it exceeds the specified length.
 std::string Ellipsise(const std::string_view str, u32 max_length, const char* ellipsis = "...");
 void EllipsiseInPlace(std::string& str, u32 max_length, const char* ellipsis = "...");
+
+/// Searches for the specified byte pattern in the given memory span. Wildcards (i.e. ??) are supported.
+std::optional<size_t> BytePatternSearch(const std::span<const u8> bytes, const std::string_view pattern);
 
 /// Strided memcpy/memcmp.
 ALWAYS_INLINE static void StrideMemCpy(void* dst, std::size_t dst_stride, const void* src, std::size_t src_stride,

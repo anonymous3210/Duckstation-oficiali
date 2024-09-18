@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "opengl_pipeline.h"
+#include "compress_helpers.h"
 #include "opengl_device.h"
 #include "opengl_stream_buffer.h"
 #include "shadergen.h"
@@ -17,8 +18,6 @@
 #include "common/string_util.h"
 
 #include "fmt/format.h"
-#include "zstd.h"
-#include "zstd_errors.h"
 
 #include <cerrno>
 
@@ -754,49 +753,29 @@ void OpenGLDevice::SetPipeline(GPUPipeline* pipeline)
   }
 }
 
-bool OpenGLDevice::ReadPipelineCache(const std::string& filename)
+bool OpenGLDevice::OpenPipelineCache(const std::string& path, Error* error)
 {
   DebugAssert(!m_pipeline_disk_cache_file);
 
-  Error error;
-  m_pipeline_disk_cache_file = FileSystem::OpenCFile(filename.c_str(), "r+b", &error);
-  m_pipeline_disk_cache_filename = filename;
-
+  m_pipeline_disk_cache_file = FileSystem::OpenCFile(path.c_str(), "r+b", error);
   if (!m_pipeline_disk_cache_file)
-  {
-    // Multiple instances running? Ignore.
-    if (errno == EACCES)
-    {
-      m_pipeline_disk_cache_filename = {};
-      return true;
-    }
-
-    // If it doesn't exist, we're going to create it.
-    if (errno != ENOENT)
-    {
-      WARNING_LOG("Failed to open shader cache: {}", error.GetDescription());
-      m_pipeline_disk_cache_filename = {};
-      return false;
-    }
-
-    WARNING_LOG("Disk cache does not exist, creating.");
-    return DiscardPipelineCache();
-  }
+    return false;
 
   // Read footer.
   const s64 size = FileSystem::FSize64(m_pipeline_disk_cache_file);
   if (size < static_cast<s64>(sizeof(PipelineDiskCacheFooter)) ||
       size >= static_cast<s64>(std::numeric_limits<u32>::max()))
   {
-    return DiscardPipelineCache();
+    Error::SetStringView(error, "Invalid cache file size.");
+    return false;
   }
 
   PipelineDiskCacheFooter file_footer;
   if (FileSystem::FSeek64(m_pipeline_disk_cache_file, size - sizeof(PipelineDiskCacheFooter), SEEK_SET) != 0 ||
       std::fread(&file_footer, sizeof(file_footer), 1, m_pipeline_disk_cache_file) != 1)
   {
-    ERROR_LOG("Failed to read disk cache footer.");
-    return DiscardPipelineCache();
+    Error::SetStringView(error, "Invalid cache file footer.");
+    return false;
   }
 
   PipelineDiskCacheFooter expected_footer;
@@ -810,8 +789,8 @@ bool OpenGLDevice::ReadPipelineCache(const std::string& filename)
       std::strncmp(file_footer.driver_version, expected_footer.driver_version, std::size(file_footer.driver_version)) !=
         0)
   {
-    ERROR_LOG("Disk cache does not match expected driver/version.");
-    return DiscardPipelineCache();
+    Error::SetStringView(error, "Cache does not match expected driver/version.");
+    return false;
   }
 
   m_pipeline_disk_cache_data_end = static_cast<u32>(size) - sizeof(PipelineDiskCacheFooter) -
@@ -819,8 +798,8 @@ bool OpenGLDevice::ReadPipelineCache(const std::string& filename)
   if (m_pipeline_disk_cache_data_end < 0 ||
       FileSystem::FSeek64(m_pipeline_disk_cache_file, m_pipeline_disk_cache_data_end, SEEK_SET) != 0)
   {
-    ERROR_LOG("Failed to seek to start of index entries.");
-    return DiscardPipelineCache();
+    Error::SetStringView(error, "Failed to seek to start of index entries.");
+    return false;
   }
 
   // Read entries.
@@ -830,14 +809,16 @@ bool OpenGLDevice::ReadPipelineCache(const std::string& filename)
     if (std::fread(&entry, sizeof(entry), 1, m_pipeline_disk_cache_file) != 1 ||
         (static_cast<s64>(entry.offset) + static_cast<s64>(entry.compressed_size)) >= size)
     {
-      ERROR_LOG("Failed to read disk cache entry.");
-      return DiscardPipelineCache();
+      Error::SetStringView(error, "Failed to read disk cache entry.");
+      m_program_cache.clear();
+      return false;
     }
 
     if (m_program_cache.find(entry.key) != m_program_cache.end())
     {
-      ERROR_LOG("Duplicate program in disk cache.");
-      return DiscardPipelineCache();
+      Error::SetStringView(error, "Duplicate program in disk cache.");
+      m_program_cache.clear();
+      return false;
     }
 
     OpenGLPipeline::ProgramCacheItem pitem;
@@ -854,16 +835,20 @@ bool OpenGLDevice::ReadPipelineCache(const std::string& filename)
   return true;
 }
 
-bool OpenGLDevice::GetPipelineCacheData(DynamicHeapArray<u8>* data)
+bool OpenGLDevice::CreatePipelineCache(const std::string& path, Error* error)
 {
-  // Self-managed.
-  return false;
+  m_pipeline_disk_cache_file = FileSystem::OpenCFile(path.c_str(), "w+b", error);
+  if (!m_pipeline_disk_cache_file)
+    return false;
+
+  m_pipeline_disk_cache_data_end = 0;
+  m_pipeline_disk_cache_changed = true;
+  return true;
 }
 
 GLuint OpenGLDevice::CreateProgramFromPipelineCache(const OpenGLPipeline::ProgramCacheItem& it,
                                                     const GPUPipeline::GraphicsConfig& plconfig)
 {
-  DynamicHeapArray<u8> data(it.file_uncompressed_size);
   DynamicHeapArray<u8> compressed_data(it.file_compressed_size);
 
   if (FileSystem::FSeek64(m_pipeline_disk_cache_file, it.file_offset, SEEK_SET) != 0 ||
@@ -873,14 +858,15 @@ GLuint OpenGLDevice::CreateProgramFromPipelineCache(const OpenGLPipeline::Progra
     return 0;
   }
 
-  const size_t decompress_result =
-    ZSTD_decompress(data.data(), data.size(), compressed_data.data(), compressed_data.size());
-  if (ZSTD_isError(decompress_result)) [[unlikely]]
+  Error error;
+  CompressHelpers::OptionalByteBuffer data = CompressHelpers::DecompressBuffer(
+    CompressHelpers::CompressType::Zstandard, CompressHelpers::OptionalByteBuffer(std::move(compressed_data)),
+    it.file_uncompressed_size, &error);
+  if (!data.has_value())
   {
-    ERROR_LOG("Failed to decompress program from disk cache: {}", ZSTD_getErrorName(decompress_result));
+    ERROR_LOG("Failed to decompress program from disk cache: {}", error.GetDescription());
     return 0;
   }
-  compressed_data.deallocate();
 
   glGetError();
   GLuint prog = glCreateProgram();
@@ -890,7 +876,7 @@ GLuint OpenGLDevice::CreateProgramFromPipelineCache(const OpenGLPipeline::Progra
     return 0;
   }
 
-  glProgramBinary(prog, it.file_format, data.data(), it.file_uncompressed_size);
+  glProgramBinary(prog, it.file_format, data->data(), it.file_uncompressed_size);
 
   GLint link_status;
   glGetProgramiv(prog, GL_LINK_STATUS, &link_status);
@@ -932,19 +918,21 @@ void OpenGLDevice::AddToPipelineCache(OpenGLPipeline::ProgramCacheItem* it)
     WARNING_LOG("Size changed from {} to {} after glGetProgramBinary()", uncompressed_data.size(), binary_size);
   }
 
-  DynamicHeapArray<u8> compressed_data(ZSTD_compressBound(binary_size));
-  const size_t compress_result =
-    ZSTD_compress(compressed_data.data(), compressed_data.size(), uncompressed_data.data(), binary_size, 0);
-  if (ZSTD_isError(compress_result)) [[unlikely]]
+  Error error;
+  CompressHelpers::OptionalByteBuffer compressed_data =
+    CompressHelpers::CompressToBuffer(CompressHelpers::CompressType::Zstandard,
+                                      CompressHelpers::OptionalByteBuffer(std::move(uncompressed_data)), -1, &error);
+  if (!compressed_data.has_value()) [[unlikely]]
   {
-    ERROR_LOG("Failed to compress program: {}", ZSTD_getErrorName(compress_result));
+    ERROR_LOG("Failed to compress program: {}", error.GetDescription());
     return;
   }
 
-  DEV_LOG("Program binary retrieved and compressed, {} -> {} bytes, format {}", binary_size, compress_result, format);
+  DEV_LOG("Program binary retrieved and compressed, {} -> {} bytes, format {}", binary_size, compressed_data->size(),
+          format);
 
   if (FileSystem::FSeek64(m_pipeline_disk_cache_file, m_pipeline_disk_cache_data_end, SEEK_SET) != 0 ||
-      std::fwrite(compressed_data.data(), compress_result, 1, m_pipeline_disk_cache_file) != 1)
+      std::fwrite(compressed_data->data(), compressed_data->size(), 1, m_pipeline_disk_cache_file) != 1)
   {
     ERROR_LOG("Failed to write binary to disk cache.");
   }
@@ -952,8 +940,8 @@ void OpenGLDevice::AddToPipelineCache(OpenGLPipeline::ProgramCacheItem* it)
   it->file_format = format;
   it->file_offset = m_pipeline_disk_cache_data_end;
   it->file_uncompressed_size = static_cast<u32>(binary_size);
-  it->file_compressed_size = static_cast<u32>(compress_result);
-  m_pipeline_disk_cache_data_end += static_cast<u32>(compress_result);
+  it->file_compressed_size = static_cast<u32>(compressed_data->size());
+  m_pipeline_disk_cache_data_end += static_cast<u32>(compressed_data->size());
   m_pipeline_disk_cache_changed = true;
 }
 
@@ -975,42 +963,42 @@ bool OpenGLDevice::DiscardPipelineCache()
     it = m_program_cache.erase(it);
   }
 
-  if (m_pipeline_disk_cache_file)
-    std::fclose(m_pipeline_disk_cache_file);
-
-  Error error;
-  m_pipeline_disk_cache_data_end = 0;
-  m_pipeline_disk_cache_file = FileSystem::OpenCFile(m_pipeline_disk_cache_filename.c_str(), "w+b", &error);
-  if (!m_pipeline_disk_cache_file) [[unlikely]]
+  if (!m_pipeline_disk_cache_file)
   {
-    ERROR_LOG("Failed to reopen pipeline cache: {}", error.GetDescription());
-    m_pipeline_disk_cache_filename = {};
+    // Probably shouldn't get here...
     return false;
   }
 
+  Error error;
+  if (!FileSystem::FTruncate64(m_pipeline_disk_cache_file, 0, &error))
+  {
+    ERROR_LOG("Failed to truncate pipeline cache: {}", error.GetDescription());
+    std::fclose(m_pipeline_disk_cache_file);
+    m_pipeline_disk_cache_file = nullptr;
+    return false;
+  }
+
+  m_pipeline_disk_cache_data_end = 0;
+  m_pipeline_disk_cache_changed = true;
   return true;
 }
 
-void OpenGLDevice::ClosePipelineCache()
+bool OpenGLDevice::ClosePipelineCache(const std::string& filename, Error* error)
 {
-  const ScopedGuard file_closer = [this]() {
-    if (m_pipeline_disk_cache_file)
-    {
-      std::fclose(m_pipeline_disk_cache_file);
-      m_pipeline_disk_cache_file = nullptr;
-    }
-  };
-
   if (!m_pipeline_disk_cache_changed)
   {
     VERBOSE_LOG("Not updating pipeline cache because it has not changed.");
-    return;
+    std::fclose(m_pipeline_disk_cache_file);
+    m_pipeline_disk_cache_file = nullptr;
+    return true;
   }
 
-  if (FileSystem::FSeek64(m_pipeline_disk_cache_file, m_pipeline_disk_cache_data_end, SEEK_SET) != 0) [[unlikely]]
+  // Rewrite footer/index entries.
+  if (!FileSystem::FSeek64(m_pipeline_disk_cache_file, m_pipeline_disk_cache_data_end, SEEK_SET, error) != 0)
   {
-    ERROR_LOG("Failed to seek to data end.");
-    return;
+    std::fclose(m_pipeline_disk_cache_file);
+    m_pipeline_disk_cache_file = nullptr;
+    return false;
   }
 
   u32 count = 0;
@@ -1029,8 +1017,10 @@ void OpenGLDevice::ClosePipelineCache()
 
     if (std::fwrite(&entry, sizeof(entry), 1, m_pipeline_disk_cache_file) != 1) [[unlikely]]
     {
-      ERROR_LOG("Failed to write index entry.");
-      return;
+      Error::SetErrno(error, "fwrite() for entry failed: ", errno);
+      std::fclose(m_pipeline_disk_cache_file);
+      m_pipeline_disk_cache_file = nullptr;
+      return false;
     }
 
     count++;
@@ -1041,5 +1031,14 @@ void OpenGLDevice::ClosePipelineCache()
   footer.num_programs = count;
 
   if (std::fwrite(&footer, sizeof(footer), 1, m_pipeline_disk_cache_file) != 1) [[unlikely]]
-    ERROR_LOG("Failed to write footer.");
+  {
+    Error::SetErrno(error, "fwrite() for footer failed: ", errno);
+    std::fclose(m_pipeline_disk_cache_file);
+    m_pipeline_disk_cache_file = nullptr;
+  }
+
+  if (std::fclose(m_pipeline_disk_cache_file) != 0)
+    Error::SetErrno(error, "fclose() failed: ", errno);
+  m_pipeline_disk_cache_file = nullptr;
+  return true;
 }

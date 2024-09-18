@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cue_parser.h"
 
@@ -80,7 +80,7 @@ void CueParser::File::SetError(u32 line_number, Error* error, const char* format
   va_end(ap);
 
   ERROR_LOG("Cue parse error at line {}: {}", line_number, str.c_str());
-  Error::SetString(error, fmt::format("Cue parse error at line {}: {}", line_number, str));
+  Error::SetStringFmt(error, "Cue parse error at line {}: {}", line_number, str);
 }
 
 std::string_view CueParser::File::GetToken(const char*& line)

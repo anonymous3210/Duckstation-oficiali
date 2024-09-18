@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "settings.h"
 #include "achievements.h"
@@ -10,12 +10,15 @@
 #include "util/gpu_device.h"
 #include "util/imgui_manager.h"
 #include "util/input_manager.h"
+#include "util/media_capture.h"
 
 #include "common/assert.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/path.h"
 #include "common/string_util.h"
+
+#include "fmt/format.h"
 
 #include <algorithm>
 #include <array>
@@ -82,6 +85,12 @@ float SettingInfo::FloatStepValue() const
   return step_value ? StringUtil::FromChars<float>(step_value).value_or(fallback_value) : fallback_value;
 }
 
+#if defined(_WIN32)
+const MediaCaptureBackend Settings::DEFAULT_MEDIA_CAPTURE_BACKEND = MediaCaptureBackend::MediaFoundation;
+#elif !defined(__ANDROID__)
+const MediaCaptureBackend Settings::DEFAULT_MEDIA_CAPTURE_BACKEND = MediaCaptureBackend::FFmpeg;
+#endif
+
 Settings::Settings()
 {
   controller_types[0] = DEFAULT_CONTROLLER_1_TYPE;
@@ -127,7 +136,7 @@ void Settings::UpdateOverclockActive()
   cpu_overclock_active = (cpu_overclock_enable && (cpu_overclock_numerator != 1 || cpu_overclock_denominator != 1));
 }
 
-void Settings::Load(SettingsInterface& si)
+void Settings::Load(SettingsInterface& si, SettingsInterface& controller_si)
 {
   region =
     ParseConsoleRegionName(
@@ -147,7 +156,6 @@ void Settings::Load(SettingsInterface& si)
   pause_on_controller_disconnection = si.GetBoolValue("Main", "PauseOnControllerDisconnection", false);
   save_state_on_exit = si.GetBoolValue("Main", "SaveStateOnExit", true);
   create_save_state_backups = si.GetBoolValue("Main", "CreateSaveStateBackups", DEFAULT_SAVE_STATE_BACKUPS);
-  compress_save_states = si.GetBoolValue("Main", "CompressSaveStates", DEFAULT_SAVE_STATE_COMPRESSION);
   confim_power_off = si.GetBoolValue("Main", "ConfirmPowerOff", true);
   load_devices_from_save_states = si.GetBoolValue("Main", "LoadDevicesFromSaveStates", false);
   apply_compatibility_settings = si.GetBoolValue("Main", "ApplyCompatibilitySettings", true);
@@ -195,7 +203,6 @@ void Settings::Load(SettingsInterface& si)
   gpu_per_sample_shading = si.GetBoolValue("GPU", "PerSampleShading", false);
   gpu_use_thread = si.GetBoolValue("GPU", "UseThread", true);
   gpu_use_software_renderer_for_readbacks = si.GetBoolValue("GPU", "UseSoftwareRendererForReadbacks", false);
-  gpu_threaded_presentation = si.GetBoolValue("GPU", "ThreadedPresentation", DEFAULT_THREADED_PRESENTATION);
   gpu_true_color = si.GetBoolValue("GPU", "TrueColor", true);
   gpu_debanding = si.GetBoolValue("GPU", "Debanding", false);
   gpu_scaled_dithering = si.GetBoolValue("GPU", "ScaledDithering", true);
@@ -222,8 +229,10 @@ void Settings::Load(SettingsInterface& si)
     ParseGPUWireframeMode(
       si.GetStringValue("GPU", "WireframeMode", GetGPUWireframeModeName(DEFAULT_GPU_WIREFRAME_MODE)).c_str())
       .value_or(DEFAULT_GPU_WIREFRAME_MODE);
-  gpu_disable_interlacing = si.GetBoolValue("GPU", "DisableInterlacing", true);
-  gpu_force_ntsc_timings = si.GetBoolValue("GPU", "ForceNTSCTimings", false);
+  gpu_force_video_timing =
+    ParseForceVideoTimingName(
+      si.GetStringValue("GPU", "ForceVideoTiming", GetForceVideoTimingName(DEFAULT_FORCE_VIDEO_TIMING_MODE)).c_str())
+      .value_or(DEFAULT_FORCE_VIDEO_TIMING_MODE);
   gpu_widescreen_hack = si.GetBoolValue("GPU", "WidescreenHack", false);
   display_24bit_chroma_smoothing = si.GetBoolValue("GPU", "ChromaSmoothing24Bit", false);
   gpu_pgxp_enable = si.GetBoolValue("GPU", "PGXPEnable", false);
@@ -239,9 +248,9 @@ void Settings::Load(SettingsInterface& si)
   SetPGXPDepthClearThreshold(si.GetFloatValue("GPU", "PGXPDepthClearThreshold", DEFAULT_GPU_PGXP_DEPTH_THRESHOLD));
 
   display_deinterlacing_mode =
-    ParseDisplayDeinterlacingMode(si.GetStringValue("Display", "DeinterlacingMode",
-                                                    GetDisplayDeinterlacingModeName(DEFAULT_DISPLAY_DEINTERLACING_MODE))
-                                    .c_str())
+    ParseDisplayDeinterlacingMode(
+      si.GetStringValue("GPU", "DeinterlacingMode", GetDisplayDeinterlacingModeName(DEFAULT_DISPLAY_DEINTERLACING_MODE))
+        .c_str())
       .value_or(DEFAULT_DISPLAY_DEINTERLACING_MODE);
   display_crop_mode =
     ParseDisplayCropMode(
@@ -296,7 +305,7 @@ void Settings::Load(SettingsInterface& si)
   display_active_end_offset = static_cast<s16>(si.GetIntValue("Display", "ActiveEndOffset", 0));
   display_line_start_offset = static_cast<s8>(si.GetIntValue("Display", "LineStartOffset", 0));
   display_line_end_offset = static_cast<s8>(si.GetIntValue("Display", "LineEndOffset", 0));
-  display_show_osd_messages = si.GetBoolValue("Display", "ShowOSDMessages", true);
+  ImGuiManager::SetShowOSDMessages(si.GetBoolValue("Display", "ShowOSDMessages", true));
   display_show_fps = si.GetBoolValue("Display", "ShowFPS", false);
   display_show_speed = si.GetBoolValue("Display", "ShowSpeed", false);
   display_show_gpu_stats = si.GetBoolValue("Display", "ShowGPUStatistics", false);
@@ -309,7 +318,14 @@ void Settings::Load(SettingsInterface& si)
   display_show_inputs = si.GetBoolValue("Display", "ShowInputs", false);
   display_show_enhancements = si.GetBoolValue("Display", "ShowEnhancements", false);
   display_stretch_vertically = si.GetBoolValue("Display", "StretchVertically", false);
+  display_auto_resize_window = si.GetBoolValue("Display", "AutoResizeWindow", false);
   display_osd_scale = si.GetFloatValue("Display", "OSDScale", DEFAULT_OSD_SCALE);
+
+  save_state_compression = ParseSaveStateCompressionModeName(
+                             si.GetStringValue("Main", "SaveStateCompression",
+                                               GetSaveStateCompressionModeName(DEFAULT_SAVE_STATE_COMPRESSION_MODE))
+                               .c_str())
+                             .value_or(DEFAULT_SAVE_STATE_COMPRESSION_MODE);
 
   cdrom_readahead_sectors =
     static_cast<u8>(si.GetIntValue("CDROM", "ReadaheadSectors", DEFAULT_CDROM_READAHEAD_SECTORS));
@@ -337,6 +353,7 @@ void Settings::Load(SettingsInterface& si)
   audio_output_muted = si.GetBoolValue("Audio", "OutputMuted", false);
 
   use_old_mdec_routines = si.GetBoolValue("Hacks", "UseOldMDECRoutines", false);
+  export_shared_memory = si.GetBoolValue("Hacks", "ExportSharedMemory", false);
   pcdrv_enable = si.GetBoolValue("PCDrv", "Enabled", false);
   pcdrv_enable_writes = si.GetBoolValue("PCDrv", "EnableWrites", false);
   pcdrv_root = si.GetStringValue("PCDrv", "Root");
@@ -351,7 +368,8 @@ void Settings::Load(SettingsInterface& si)
 
   multitap_mode =
     ParseMultitapModeName(
-      si.GetStringValue("ControllerPorts", "MultitapMode", GetMultitapModeName(DEFAULT_MULTITAP_MODE)).c_str())
+      controller_si.GetStringValue("ControllerPorts", "MultitapMode", GetMultitapModeName(DEFAULT_MULTITAP_MODE))
+        .c_str())
       .value_or(DEFAULT_MULTITAP_MODE);
 
   const std::array<bool, 2> mtap_enabled = {{IsPort1MultitapEnabled(), IsPort2MultitapEnabled()}};
@@ -366,7 +384,7 @@ void Settings::Load(SettingsInterface& si)
     }
 
     const ControllerType default_type = (i == 0) ? DEFAULT_CONTROLLER_1_TYPE : DEFAULT_CONTROLLER_2_TYPE;
-    const Controller::ControllerInfo* cinfo = Controller::GetControllerInfo(si.GetTinyStringValue(
+    const Controller::ControllerInfo* cinfo = Controller::GetControllerInfo(controller_si.GetTinyStringValue(
       Controller::GetSettingsSection(i).c_str(), "Type", Controller::GetControllerInfo(default_type)->name));
     controller_types[i] = cinfo ? cinfo->type : default_type;
   }
@@ -403,7 +421,7 @@ void Settings::Load(SettingsInterface& si)
                 .value_or(DEFAULT_LOG_LEVEL);
   log_filter = si.GetStringValue("Logging", "LogFilter", "");
   log_timestamps = si.GetBoolValue("Logging", "LogTimestamps", true);
-  log_to_console = si.GetBoolValue("Logging", "LogToConsole", DEFAULT_LOG_TO_CONSOLE);
+  log_to_console = si.GetBoolValue("Logging", "LogToConsole", false);
   log_to_debug = si.GetBoolValue("Logging", "LogToDebug", false);
   log_to_window = si.GetBoolValue("Logging", "LogToWindow", false);
   log_to_file = si.GetBoolValue("Logging", "LogToFile", false);
@@ -432,9 +450,6 @@ void Settings::Load(SettingsInterface& si)
     si.GetIntValue("TextureReplacements", "DumpVRAMWriteHeightThreshold", 128);
 
 #ifdef __ANDROID__
-  // No expansion due to license incompatibility.
-  audio_expansion_mode = AudioExpansionMode::Disabled;
-
   // Android users are incredibly silly and don't understand that stretch is in the aspect ratio list...
   if (si.GetBoolValue("Display", "Stretch", false))
     display_aspect_ratio = DisplayAspectRatio::MatchWindow;
@@ -461,7 +476,7 @@ void Settings::Save(SettingsInterface& si, bool ignore_base) const
     si.SetBoolValue("Main", "PauseOnControllerDisconnection", pause_on_controller_disconnection);
     si.SetBoolValue("Main", "SaveStateOnExit", save_state_on_exit);
     si.SetBoolValue("Main", "CreateSaveStateBackups", create_save_state_backups);
-    si.SetBoolValue("Main", "CompressSaveStates", compress_save_states);
+    si.SetStringValue("Main", "SaveStateCompression", GetSaveStateCompressionModeName(save_state_compression));
     si.SetBoolValue("Main", "ConfirmPowerOff", confim_power_off);
     si.SetBoolValue("Main", "EnableDiscordPresence", enable_discord_presence);
   }
@@ -505,7 +520,6 @@ void Settings::Save(SettingsInterface& si, bool ignore_base) const
 
   si.SetBoolValue("GPU", "PerSampleShading", gpu_per_sample_shading);
   si.SetBoolValue("GPU", "UseThread", gpu_use_thread);
-  si.SetBoolValue("GPU", "ThreadedPresentation", gpu_threaded_presentation);
   si.SetBoolValue("GPU", "UseSoftwareRendererForReadbacks", gpu_use_software_renderer_for_readbacks);
   si.SetBoolValue("GPU", "TrueColor", gpu_true_color);
   si.SetBoolValue("GPU", "Debanding", gpu_debanding);
@@ -520,8 +534,7 @@ void Settings::Save(SettingsInterface& si, bool ignore_base) const
   si.SetStringValue("GPU", "DownsampleMode", GetDownsampleModeName(gpu_downsample_mode));
   si.SetUIntValue("GPU", "DownsampleScale", gpu_downsample_scale);
   si.SetStringValue("GPU", "WireframeMode", GetGPUWireframeModeName(gpu_wireframe_mode));
-  si.SetBoolValue("GPU", "DisableInterlacing", gpu_disable_interlacing);
-  si.SetBoolValue("GPU", "ForceNTSCTimings", gpu_force_ntsc_timings);
+  si.SetStringValue("GPU", "ForceVideoTiming", GetForceVideoTimingName(gpu_force_video_timing));
   si.SetBoolValue("GPU", "WidescreenHack", gpu_widescreen_hack);
   si.SetBoolValue("GPU", "ChromaSmoothing24Bit", display_24bit_chroma_smoothing);
   si.SetBoolValue("GPU", "PGXPEnable", gpu_pgxp_enable);
@@ -536,7 +549,7 @@ void Settings::Save(SettingsInterface& si, bool ignore_base) const
   si.SetBoolValue("GPU", "PGXPDisableOn2DPolygons", gpu_pgxp_disable_2d);
   si.SetFloatValue("GPU", "PGXPDepthClearThreshold", GetPGXPDepthClearThreshold());
 
-  si.SetStringValue("Display", "DeinterlacingMode", GetDisplayDeinterlacingModeName(display_deinterlacing_mode));
+  si.SetStringValue("GPU", "DeinterlacingMode", GetDisplayDeinterlacingModeName(display_deinterlacing_mode));
   si.SetStringValue("Display", "CropMode", GetDisplayCropModeName(display_crop_mode));
   si.SetIntValue("Display", "ActiveStartOffset", display_active_start_offset);
   si.SetIntValue("Display", "ActiveEndOffset", display_active_end_offset);
@@ -562,7 +575,7 @@ void Settings::Save(SettingsInterface& si, bool ignore_base) const
   si.GetIntValue("Display", "CustomAspectRatioDenominator", display_aspect_ratio_custom_denominator);
   if (!ignore_base)
   {
-    si.SetBoolValue("Display", "ShowOSDMessages", display_show_osd_messages);
+    si.SetBoolValue("Display", "ShowOSDMessages", ImGuiManager::IsShowingOSDMessages());
     si.SetBoolValue("Display", "ShowFPS", display_show_fps);
     si.SetBoolValue("Display", "ShowSpeed", display_show_speed);
     si.SetBoolValue("Display", "ShowResolution", display_show_resolution);
@@ -578,6 +591,7 @@ void Settings::Save(SettingsInterface& si, bool ignore_base) const
   }
 
   si.SetBoolValue("Display", "StretchVertically", display_stretch_vertically);
+  si.SetBoolValue("Display", "AutoResizeWindow", display_auto_resize_window);
 
   si.SetIntValue("CDROM", "ReadaheadSectors", cdrom_readahead_sectors);
   si.SetStringValue("CDROM", "MechaconVersion", GetCDROMMechVersionName(cdrom_mechacon_version));
@@ -597,6 +611,7 @@ void Settings::Save(SettingsInterface& si, bool ignore_base) const
   si.SetBoolValue("Audio", "OutputMuted", audio_output_muted);
 
   si.SetBoolValue("Hacks", "UseOldMDECRoutines", use_old_mdec_routines);
+  si.SetBoolValue("Hacks", "ExportSharedMemory", export_shared_memory);
 
   if (!ignore_base)
   {
@@ -728,10 +743,10 @@ void Settings::FixIncompatibleSettings(bool display_osd_messages)
     g_settings.gpu_texture_filter = GPUTextureFilter::Nearest;
     g_settings.gpu_sprite_texture_filter = GPUTextureFilter::Nearest;
     g_settings.gpu_line_detect_mode = GPULineDetectMode::Disabled;
-    g_settings.gpu_disable_interlacing = false;
-    g_settings.gpu_force_ntsc_timings = false;
+    g_settings.gpu_force_video_timing = ForceVideoTimingMode::Disabled;
     g_settings.gpu_widescreen_hack = false;
     g_settings.gpu_pgxp_enable = false;
+    g_settings.display_deinterlacing_mode = DisplayDeinterlacingMode::Adaptive;
     g_settings.display_24bit_chroma_smoothing = false;
     g_settings.cdrom_read_speedup = 1;
     g_settings.cdrom_seek_speedup = 1;
@@ -891,10 +906,14 @@ static constexpr const std::array s_log_level_names = {
   "None", "Error", "Warning", "Info", "Verbose", "Dev", "Debug", "Trace",
 };
 static constexpr const std::array s_log_level_display_names = {
-  TRANSLATE_NOOP("LogLevel", "None"),    TRANSLATE_NOOP("LogLevel", "Error"),
-  TRANSLATE_NOOP("LogLevel", "Warning"), TRANSLATE_NOOP("LogLevel", "Information"),
-  TRANSLATE_NOOP("LogLevel", "Verbose"), TRANSLATE_NOOP("LogLevel", "Developer"),
-  TRANSLATE_NOOP("LogLevel", "Debug"),   TRANSLATE_NOOP("LogLevel", "Trace"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "None", "LogLevel"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Error", "LogLevel"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Warning", "LogLevel"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Information", "LogLevel"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Verbose", "LogLevel"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Developer", "LogLevel"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Debug", "LogLevel"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Trace", "LogLevel"),
 };
 
 std::optional<LOGLEVEL> Settings::ParseLogLevelName(const char* str)
@@ -913,18 +932,26 @@ std::optional<LOGLEVEL> Settings::ParseLogLevelName(const char* str)
 
 const char* Settings::GetLogLevelName(LOGLEVEL level)
 {
-  return s_log_level_names[static_cast<int>(level)];
+  return s_log_level_names[static_cast<size_t>(level)];
 }
 
 const char* Settings::GetLogLevelDisplayName(LOGLEVEL level)
 {
-  return Host::TranslateToCString("LogLevel", s_log_level_display_names[static_cast<int>(level)]);
+  return Host::TranslateToCString("Settings", s_log_level_display_names[static_cast<size_t>(level)], "LogLevel");
 }
 
-static constexpr const std::array s_console_region_names = {"Auto", "NTSC-J", "NTSC-U", "PAL"};
+static constexpr const std::array s_console_region_names = {
+  "Auto",
+  "NTSC-J",
+  "NTSC-U",
+  "PAL",
+};
 static constexpr const std::array s_console_region_display_names = {
-  TRANSLATE_NOOP("ConsoleRegion", "Auto-Detect"), TRANSLATE_NOOP("ConsoleRegion", "NTSC-J (Japan)"),
-  TRANSLATE_NOOP("ConsoleRegion", "NTSC-U/C (US, Canada)"), TRANSLATE_NOOP("ConsoleRegion", "PAL (Europe, Australia)")};
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Auto-Detect", "ConsoleRegion"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "NTSC-J (Japan)", "ConsoleRegion"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "NTSC-U/C (US, Canada)", "ConsoleRegion"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "PAL (Europe, Australia)", "ConsoleRegion"),
+};
 
 std::optional<ConsoleRegion> Settings::ParseConsoleRegionName(const char* str)
 {
@@ -942,19 +969,25 @@ std::optional<ConsoleRegion> Settings::ParseConsoleRegionName(const char* str)
 
 const char* Settings::GetConsoleRegionName(ConsoleRegion region)
 {
-  return s_console_region_names[static_cast<int>(region)];
+  return s_console_region_names[static_cast<size_t>(region)];
 }
 
 const char* Settings::GetConsoleRegionDisplayName(ConsoleRegion region)
 {
-  return Host::TranslateToCString("ConsoleRegion", s_console_region_display_names[static_cast<int>(region)]);
+  return Host::TranslateToCString("Settings", s_console_region_display_names[static_cast<size_t>(region)],
+                                  "ConsoleRegion");
 }
 
-static constexpr const std::array s_disc_region_names = {"NTSC-J", "NTSC-U", "PAL", "Other", "Non-PS1"};
+static constexpr const std::array s_disc_region_names = {
+  "NTSC-J", "NTSC-U", "PAL", "Other", "Non-PS1",
+};
 static constexpr const std::array s_disc_region_display_names = {
-  TRANSLATE_NOOP("DiscRegion", "NTSC-J (Japan)"), TRANSLATE_NOOP("DiscRegion", "NTSC-U/C (US, Canada)"),
-  TRANSLATE_NOOP("DiscRegion", "PAL (Europe, Australia)"), TRANSLATE_NOOP("DiscRegion", "Other"),
-  TRANSLATE_NOOP("DiscRegion", "Non-PS1")};
+  TRANSLATE_DISAMBIG_NOOP("Settings", "NTSC-J (Japan)", "DiscRegion"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "NTSC-U/C (US, Canada)", "DiscRegion"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "PAL (Europe, Australia)", "DiscRegion"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Other", "DiscRegion"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Non-PS1", "DiscRegion"),
+};
 
 std::optional<DiscRegion> Settings::ParseDiscRegionName(const char* str)
 {
@@ -972,21 +1005,26 @@ std::optional<DiscRegion> Settings::ParseDiscRegionName(const char* str)
 
 const char* Settings::GetDiscRegionName(DiscRegion region)
 {
-  return s_disc_region_names[static_cast<int>(region)];
+  return s_disc_region_names[static_cast<size_t>(region)];
 }
 
 const char* Settings::GetDiscRegionDisplayName(DiscRegion region)
 {
-  return Host::TranslateToCString("DiscRegion", s_disc_region_display_names[static_cast<int>(region)]);
+  return Host::TranslateToCString("Settings", s_disc_region_display_names[static_cast<size_t>(region)], "DiscRegion");
 }
 
-static constexpr const std::array s_cpu_execution_mode_names = {"Interpreter", "CachedInterpreter", "Recompiler",
-                                                                "NewRec"};
+static constexpr const std::array s_cpu_execution_mode_names = {
+  "Interpreter",
+  "CachedInterpreter",
+  "Recompiler",
+  "NewRec",
+};
 static constexpr const std::array s_cpu_execution_mode_display_names = {
-  TRANSLATE_NOOP("CPUExecutionMode", "Interpreter (Slowest)"),
-  TRANSLATE_NOOP("CPUExecutionMode", "Cached Interpreter (Faster)"),
-  TRANSLATE_NOOP("CPUExecutionMode", "Recompiler (Fastest)"),
-  TRANSLATE_NOOP("CPUExecutionMode", "New Recompiler (Experimental)")};
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Interpreter (Slowest)", "CPUExecutionMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Cached Interpreter (Faster)", "CPUExecutionMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Recompiler (Fastest)", "CPUExecutionMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "New Recompiler (Experimental)", "CPUExecutionMode"),
+};
 
 std::optional<CPUExecutionMode> Settings::ParseCPUExecutionMode(const char* str)
 {
@@ -1009,14 +1047,20 @@ const char* Settings::GetCPUExecutionModeName(CPUExecutionMode mode)
 
 const char* Settings::GetCPUExecutionModeDisplayName(CPUExecutionMode mode)
 {
-  return Host::TranslateToCString("CPUExecutionMode", s_cpu_execution_mode_display_names[static_cast<u8>(mode)]);
+  return Host::TranslateToCString("Settings", s_cpu_execution_mode_display_names[static_cast<size_t>(mode)],
+                                  "CPUExecutionMode");
 }
 
-static constexpr const std::array s_cpu_fastmem_mode_names = {"Disabled", "MMap", "LUT"};
+static constexpr const std::array s_cpu_fastmem_mode_names = {
+  "Disabled",
+  "MMap",
+  "LUT",
+};
 static constexpr const std::array s_cpu_fastmem_mode_display_names = {
-  TRANSLATE_NOOP("CPUFastmemMode", "Disabled (Slowest)"),
-  TRANSLATE_NOOP("CPUFastmemMode", "MMap (Hardware, Fastest, 64-Bit Only)"),
-  TRANSLATE_NOOP("CPUFastmemMode", "LUT (Faster)")};
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Disabled (Slowest)", "CPUFastmemMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "MMap (Hardware, Fastest, 64-Bit Only)", "CPUFastmemMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "LUT (Faster)", "CPUFastmemMode"),
+};
 
 std::optional<CPUFastmemMode> Settings::ParseCPUFastmemMode(const char* str)
 {
@@ -1039,7 +1083,8 @@ const char* Settings::GetCPUFastmemModeName(CPUFastmemMode mode)
 
 const char* Settings::GetCPUFastmemModeDisplayName(CPUFastmemMode mode)
 {
-  return Host::TranslateToCString("CPUFastmemMode", s_cpu_fastmem_mode_display_names[static_cast<u8>(mode)]);
+  return Host::TranslateToCString("Settings", s_cpu_fastmem_mode_display_names[static_cast<size_t>(mode)],
+                                  "CPUFastmemMode");
 }
 
 static constexpr const std::array s_gpu_renderer_names = {
@@ -1059,20 +1104,21 @@ static constexpr const std::array s_gpu_renderer_names = {
   "Software",
 };
 static constexpr const std::array s_gpu_renderer_display_names = {
-  TRANSLATE_NOOP("GPURenderer", "Automatic"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Automatic", "GPURenderer"),
 #ifdef _WIN32
-  TRANSLATE_NOOP("GPURenderer", "Direct3D 11"), TRANSLATE_NOOP("GPURenderer", "Direct3D 12"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Direct3D 11", "GPURenderer"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Direct3D 12", "GPURenderer"),
 #endif
 #ifdef __APPLE__
-  TRANSLATE_NOOP("GPURenderer", "Metal"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Metal", "GPURenderer"),
 #endif
 #ifdef ENABLE_VULKAN
-  TRANSLATE_NOOP("GPURenderer", "Vulkan"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Vulkan", "GPURenderer"),
 #endif
 #ifdef ENABLE_OPENGL
-  TRANSLATE_NOOP("GPURenderer", "OpenGL"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "OpenGL", "GPURenderer"),
 #endif
-  TRANSLATE_NOOP("GPURenderer", "Software"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Software", "GPURenderer"),
 };
 
 std::optional<GPURenderer> Settings::ParseRendererName(const char* str)
@@ -1091,12 +1137,13 @@ std::optional<GPURenderer> Settings::ParseRendererName(const char* str)
 
 const char* Settings::GetRendererName(GPURenderer renderer)
 {
-  return s_gpu_renderer_names[static_cast<int>(renderer)];
+  return s_gpu_renderer_names[static_cast<size_t>(renderer)];
 }
 
 const char* Settings::GetRendererDisplayName(GPURenderer renderer)
 {
-  return Host::TranslateToCString("GPURenderer", s_gpu_renderer_display_names[static_cast<int>(renderer)]);
+  return Host::TranslateToCString("Settings", s_gpu_renderer_display_names[static_cast<size_t>(renderer)],
+                                  "GPURenderer");
 }
 
 RenderAPI Settings::GetRenderAPIForRenderer(GPURenderer renderer)
@@ -1169,13 +1216,13 @@ static constexpr const std::array s_texture_filter_names = {
   "Nearest", "Bilinear", "BilinearBinAlpha", "JINC2", "JINC2BinAlpha", "xBR", "xBRBinAlpha",
 };
 static constexpr const std::array s_texture_filter_display_names = {
-  TRANSLATE_NOOP("GPUTextureFilter", "Nearest-Neighbor"),
-  TRANSLATE_NOOP("GPUTextureFilter", "Bilinear"),
-  TRANSLATE_NOOP("GPUTextureFilter", "Bilinear (No Edge Blending)"),
-  TRANSLATE_NOOP("GPUTextureFilter", "JINC2 (Slow)"),
-  TRANSLATE_NOOP("GPUTextureFilter", "JINC2 (Slow, No Edge Blending)"),
-  TRANSLATE_NOOP("GPUTextureFilter", "xBR (Very Slow)"),
-  TRANSLATE_NOOP("GPUTextureFilter", "xBR (Very Slow, No Edge Blending)"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Nearest-Neighbor", "GPUTextureFilter"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Bilinear", "GPUTextureFilter"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Bilinear (No Edge Blending)", "GPUTextureFilter"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "JINC2 (Slow)", "GPUTextureFilter"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "JINC2 (Slow, No Edge Blending)", "GPUTextureFilter"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "xBR (Very Slow)", "GPUTextureFilter"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "xBR (Very Slow, No Edge Blending)", "GPUTextureFilter"),
 };
 
 std::optional<GPUTextureFilter> Settings::ParseTextureFilterName(const char* str)
@@ -1199,7 +1246,8 @@ const char* Settings::GetTextureFilterName(GPUTextureFilter filter)
 
 const char* Settings::GetTextureFilterDisplayName(GPUTextureFilter filter)
 {
-  return Host::TranslateToCString("GPUTextureFilter", s_texture_filter_display_names[static_cast<int>(filter)]);
+  return Host::TranslateToCString("Settings", s_texture_filter_display_names[static_cast<size_t>(filter)],
+                                  "GPUTextureFilter");
 }
 
 static constexpr const std::array s_line_detect_mode_names = {
@@ -1209,10 +1257,10 @@ static constexpr const std::array s_line_detect_mode_names = {
   "AggressiveTriangles",
 };
 static constexpr const std::array s_line_detect_mode_detect_names = {
-  TRANSLATE_NOOP("GPULineDetectMode", "Disabled"),
-  TRANSLATE_NOOP("GPULineDetectMode", "Quads"),
-  TRANSLATE_NOOP("GPULineDetectMode", "Triangles (Basic)"),
-  TRANSLATE_NOOP("GPULineDetectMode", "Triangles (Aggressive)"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Disabled", "GPULineDetectMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Quads", "GPULineDetectMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Triangles (Basic)", "GPULineDetectMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Triangles (Aggressive)", "GPULineDetectMode"),
 };
 
 std::optional<GPULineDetectMode> Settings::ParseLineDetectModeName(const char* str)
@@ -1236,14 +1284,15 @@ const char* Settings::GetLineDetectModeName(GPULineDetectMode mode)
 
 const char* Settings::GetLineDetectModeDisplayName(GPULineDetectMode mode)
 {
-  return Host::TranslateToCString("GPULineDetectMode", s_line_detect_mode_detect_names[static_cast<size_t>(mode)]);
+  return Host::TranslateToCString("Settings", s_line_detect_mode_detect_names[static_cast<size_t>(mode)],
+                                  "GPULineDetectMode");
 }
 
 static constexpr const std::array s_downsample_mode_names = {"Disabled", "Box", "Adaptive"};
 static constexpr const std::array s_downsample_mode_display_names = {
-  TRANSLATE_NOOP("GPUDownsampleMode", "Disabled"),
-  TRANSLATE_NOOP("GPUDownsampleMode", "Box (Downsample 3D/Smooth All)"),
-  TRANSLATE_NOOP("GPUDownsampleMode", "Adaptive (Preserve 3D/Smooth 2D)")};
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Disabled", "GPUDownsampleMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Box (Downsample 3D/Smooth All)", "GPUDownsampleMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Adaptive (Preserve 3D/Smooth 2D)", "GPUDownsampleMode")};
 
 std::optional<GPUDownsampleMode> Settings::ParseDownsampleModeName(const char* str)
 {
@@ -1261,18 +1310,20 @@ std::optional<GPUDownsampleMode> Settings::ParseDownsampleModeName(const char* s
 
 const char* Settings::GetDownsampleModeName(GPUDownsampleMode mode)
 {
-  return s_downsample_mode_names[static_cast<int>(mode)];
+  return s_downsample_mode_names[static_cast<size_t>(mode)];
 }
 
 const char* Settings::GetDownsampleModeDisplayName(GPUDownsampleMode mode)
 {
-  return Host::TranslateToCString("GPUDownsampleMode", s_downsample_mode_display_names[static_cast<int>(mode)]);
+  return Host::TranslateToCString("Settings", s_downsample_mode_display_names[static_cast<size_t>(mode)],
+                                  "GPUDownsampleMode");
 }
 
 static constexpr const std::array s_wireframe_mode_names = {"Disabled", "OverlayWireframe", "OnlyWireframe"};
 static constexpr const std::array s_wireframe_mode_display_names = {
-  TRANSLATE_NOOP("GPUWireframeMode", "Disabled"), TRANSLATE_NOOP("GPUWireframeMode", "Overlay Wireframe"),
-  TRANSLATE_NOOP("GPUWireframeMode", "Only Wireframe")};
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Disabled", "GPUWireframeMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Overlay Wireframe", "GPUWireframeMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Only Wireframe", "GPUWireframeMode")};
 
 std::optional<GPUWireframeMode> Settings::ParseGPUWireframeMode(const char* str)
 {
@@ -1290,25 +1341,24 @@ std::optional<GPUWireframeMode> Settings::ParseGPUWireframeMode(const char* str)
 
 const char* Settings::GetGPUWireframeModeName(GPUWireframeMode mode)
 {
-  return s_wireframe_mode_names[static_cast<int>(mode)];
+  return s_wireframe_mode_names[static_cast<size_t>(mode)];
 }
 
 const char* Settings::GetGPUWireframeModeDisplayName(GPUWireframeMode mode)
 {
-  return Host::TranslateToCString("GPUWireframeMode", s_wireframe_mode_display_names[static_cast<int>(mode)]);
+  return Host::TranslateToCString("Settings", s_wireframe_mode_display_names[static_cast<size_t>(mode)],
+                                  "GPUWireframeMode");
 }
 
 static constexpr const std::array s_display_deinterlacing_mode_names = {
-  "Disabled",
-  "Weave",
-  "Blend",
-  "Adaptive",
+  "Disabled", "Weave", "Blend", "Adaptive", "Progressive",
 };
 static constexpr const std::array s_display_deinterlacing_mode_display_names = {
-  TRANSLATE_NOOP("DisplayDeinterlacingMode", "Disabled (Flickering)"),
-  TRANSLATE_NOOP("DisplayDeinterlacingMode", "Weave (Combing)"),
-  TRANSLATE_NOOP("DisplayDeinterlacingMode", "Blend (Blur)"),
-  TRANSLATE_NOOP("DisplayDeinterlacingMode", "Adaptive (FastMAD)"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Disabled (Flickering)", "DisplayDeinterlacingMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Weave (Combing)", "DisplayDeinterlacingMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Blend (Blur)", "DisplayDeinterlacingMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Adaptive (FastMAD)", "DisplayDeinterlacingMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Progressive (Optimal)", "DisplayDeinterlacingMode"),
 };
 
 std::optional<DisplayDeinterlacingMode> Settings::ParseDisplayDeinterlacingMode(const char* str)
@@ -1327,19 +1377,21 @@ std::optional<DisplayDeinterlacingMode> Settings::ParseDisplayDeinterlacingMode(
 
 const char* Settings::GetDisplayDeinterlacingModeName(DisplayDeinterlacingMode mode)
 {
-  return s_display_deinterlacing_mode_names[static_cast<int>(mode)];
+  return s_display_deinterlacing_mode_names[static_cast<size_t>(mode)];
 }
 
 const char* Settings::GetDisplayDeinterlacingModeDisplayName(DisplayDeinterlacingMode mode)
 {
-  return Host::TranslateToCString("DisplayDeinterlacingMode",
-                                  s_display_deinterlacing_mode_display_names[static_cast<int>(mode)]);
+  return Host::TranslateToCString("Settings", s_display_deinterlacing_mode_display_names[static_cast<size_t>(mode)],
+                                  "DisplayDeinterlacingMode");
 }
 
 static constexpr const std::array s_display_crop_mode_names = {"None", "Overscan", "Borders"};
 static constexpr const std::array s_display_crop_mode_display_names = {
-  TRANSLATE_NOOP("DisplayCropMode", "None"), TRANSLATE_NOOP("DisplayCropMode", "Only Overscan Area"),
-  TRANSLATE_NOOP("DisplayCropMode", "All Borders")};
+  TRANSLATE_DISAMBIG_NOOP("Settings", "None", "DisplayCropMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Only Overscan Area", "DisplayCropMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "All Borders", "DisplayCropMode"),
+};
 
 std::optional<DisplayCropMode> Settings::ParseDisplayCropMode(const char* str)
 {
@@ -1357,19 +1409,20 @@ std::optional<DisplayCropMode> Settings::ParseDisplayCropMode(const char* str)
 
 const char* Settings::GetDisplayCropModeName(DisplayCropMode crop_mode)
 {
-  return s_display_crop_mode_names[static_cast<int>(crop_mode)];
+  return s_display_crop_mode_names[static_cast<size_t>(crop_mode)];
 }
 
 const char* Settings::GetDisplayCropModeDisplayName(DisplayCropMode crop_mode)
 {
-  return Host::TranslateToCString("DisplayCropMode", s_display_crop_mode_display_names[static_cast<int>(crop_mode)]);
+  return Host::TranslateToCString("Settings", s_display_crop_mode_display_names[static_cast<size_t>(crop_mode)],
+                                  "DisplayCropMode");
 }
 
 static constexpr const std::array s_display_aspect_ratio_names = {
 #ifndef __ANDROID__
-  TRANSLATE_NOOP("DisplayAspectRatio", "Auto (Game Native)"),
-  TRANSLATE_NOOP("DisplayAspectRatio", "Stretch To Fill"),
-  TRANSLATE_NOOP("DisplayAspectRatio", "Custom"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Auto (Game Native)", "DisplayAspectRatio"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Stretch To Fill", "DisplayAspectRatio"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Custom", "DisplayAspectRatio"),
 #else
   "Auto (Game Native)",
   "Auto (Match Window)",
@@ -1399,12 +1452,13 @@ std::optional<DisplayAspectRatio> Settings::ParseDisplayAspectRatio(const char* 
 
 const char* Settings::GetDisplayAspectRatioName(DisplayAspectRatio ar)
 {
-  return s_display_aspect_ratio_names[static_cast<int>(ar)];
+  return s_display_aspect_ratio_names[static_cast<size_t>(ar)];
 }
 
 const char* Settings::GetDisplayAspectRatioDisplayName(DisplayAspectRatio ar)
 {
-  return Host::TranslateToCString("DisplayAspectRatio", s_display_aspect_ratio_names[static_cast<int>(ar)]);
+  return Host::TranslateToCString("Settings", s_display_aspect_ratio_names[static_cast<size_t>(ar)],
+                                  "DisplayAspectRatio");
 }
 
 float Settings::GetDisplayAspectRatioValue() const
@@ -1414,7 +1468,7 @@ float Settings::GetDisplayAspectRatioValue() const
     case DisplayAspectRatio::MatchWindow:
     {
       if (!g_gpu_device)
-        return s_display_aspect_ratio_values[static_cast<int>(DEFAULT_DISPLAY_ASPECT_RATIO)];
+        return s_display_aspect_ratio_values[static_cast<size_t>(DEFAULT_DISPLAY_ASPECT_RATIO)];
 
       return static_cast<float>(g_gpu_device->GetWindowWidth()) / static_cast<float>(g_gpu_device->GetWindowHeight());
     }
@@ -1427,15 +1481,17 @@ float Settings::GetDisplayAspectRatioValue() const
 
     default:
     {
-      return s_display_aspect_ratio_values[static_cast<int>(display_aspect_ratio)];
+      return s_display_aspect_ratio_values[static_cast<size_t>(display_aspect_ratio)];
     }
   }
 }
 
 static constexpr const std::array s_display_alignment_names = {"LeftOrTop", "Center", "RightOrBottom"};
 static constexpr const std::array s_display_alignment_display_names = {
-  TRANSLATE_NOOP("DisplayAlignment", "Left / Top"), TRANSLATE_NOOP("DisplayAlignment", "Center"),
-  TRANSLATE_NOOP("DisplayAlignment", "Right / Bottom")};
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Left / Top", "DisplayAlignment"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Center", "DisplayAlignment"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Right / Bottom", "DisplayAlignment"),
+};
 
 std::optional<DisplayAlignment> Settings::ParseDisplayAlignment(const char* str)
 {
@@ -1453,20 +1509,21 @@ std::optional<DisplayAlignment> Settings::ParseDisplayAlignment(const char* str)
 
 const char* Settings::GetDisplayAlignmentName(DisplayAlignment alignment)
 {
-  return s_display_alignment_names[static_cast<int>(alignment)];
+  return s_display_alignment_names[static_cast<size_t>(alignment)];
 }
 
 const char* Settings::GetDisplayAlignmentDisplayName(DisplayAlignment alignment)
 {
-  return Host::TranslateToCString("DisplayAlignment", s_display_alignment_display_names[static_cast<int>(alignment)]);
+  return Host::TranslateToCString("Settings", s_display_alignment_display_names[static_cast<size_t>(alignment)],
+                                  "DisplayAlignment");
 }
 
 static constexpr const std::array s_display_rotation_names = {"Normal", "Rotate90", "Rotate180", "Rotate270"};
 static constexpr const std::array s_display_rotation_display_names = {
-  TRANSLATE_NOOP("Settings", "No Rotation"),
-  TRANSLATE_NOOP("Settings", "Rotate 90° (Clockwise)"),
-  TRANSLATE_NOOP("Settings", "Rotate 180° (Vertical Flip)"),
-  TRANSLATE_NOOP("Settings", "Rotate 270° (Clockwise)"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "No Rotation", "DisplayRotation"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Rotate 90° (Clockwise)", "DisplayRotation"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Rotate 180° (Vertical Flip)", "DisplayRotation"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Rotate 270° (Clockwise)", "DisplayRotation"),
 };
 
 std::optional<DisplayRotation> Settings::ParseDisplayRotation(const char* str)
@@ -1485,23 +1542,61 @@ std::optional<DisplayRotation> Settings::ParseDisplayRotation(const char* str)
 
 const char* Settings::GetDisplayRotationName(DisplayRotation rotation)
 {
-  return s_display_rotation_names[static_cast<int>(rotation)];
+  return s_display_rotation_names[static_cast<size_t>(rotation)];
 }
 
 const char* Settings::GetDisplayRotationDisplayName(DisplayRotation rotation)
 {
-  return Host::TranslateToCString("Settings", s_display_rotation_display_names[static_cast<size_t>(rotation)]);
+  return Host::TranslateToCString("Settings", s_display_rotation_display_names[static_cast<size_t>(rotation)],
+                                  "DisplayRotation");
+}
+
+static constexpr const std::array s_display_force_video_timing_names = {
+  "Disabled",
+  "NTSC",
+  "PAL",
+};
+
+static constexpr const std::array s_display_force_video_timing_display_names = {
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Disabled", "ForceVideoTiming"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "NTSC (60hz)", "ForceVideoTiming"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "PAL (50hz)", "ForceVideoTiming"),
+};
+
+std::optional<ForceVideoTimingMode> Settings::ParseForceVideoTimingName(const char* str)
+{
+  int index = 0;
+  for (const char* name : s_display_force_video_timing_names)
+  {
+    if (StringUtil::Strcasecmp(name, str) == 0)
+      return static_cast<ForceVideoTimingMode>(index);
+
+    index++;
+  }
+
+  return std::nullopt;
+}
+
+const char* Settings::GetForceVideoTimingName(ForceVideoTimingMode mode)
+{
+  return s_display_force_video_timing_names[static_cast<size_t>(mode)];
+}
+
+const char* Settings::GetForceVideoTimingDisplayName(ForceVideoTimingMode mode)
+{
+  return Host::TranslateToCString("Settings", s_display_force_video_timing_display_names[static_cast<size_t>(mode)],
+                                  "ForceVideoTiming");
 }
 
 static constexpr const std::array s_display_scaling_names = {
   "Nearest", "NearestInteger", "BilinearSmooth", "BilinearSharp", "BilinearInteger",
 };
 static constexpr const std::array s_display_scaling_display_names = {
-  TRANSLATE_NOOP("DisplayScalingMode", "Nearest-Neighbor"),
-  TRANSLATE_NOOP("DisplayScalingMode", "Nearest-Neighbor (Integer)"),
-  TRANSLATE_NOOP("DisplayScalingMode", "Bilinear (Smooth)"),
-  TRANSLATE_NOOP("DisplayScalingMode", "Bilinear (Sharp)"),
-  TRANSLATE_NOOP("DisplayScalingMode", "Bilinear (Integer)"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Nearest-Neighbor", "DisplayScalingMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Nearest-Neighbor (Integer)", "DisplayScalingMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Bilinear (Smooth)", "DisplayScalingMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Bilinear (Sharp)", "DisplayScalingMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Bilinear (Integer)", "DisplayScalingMode"),
 };
 
 std::optional<DisplayScalingMode> Settings::ParseDisplayScaling(const char* str)
@@ -1520,12 +1615,13 @@ std::optional<DisplayScalingMode> Settings::ParseDisplayScaling(const char* str)
 
 const char* Settings::GetDisplayScalingName(DisplayScalingMode mode)
 {
-  return s_display_scaling_names[static_cast<int>(mode)];
+  return s_display_scaling_names[static_cast<size_t>(mode)];
 }
 
 const char* Settings::GetDisplayScalingDisplayName(DisplayScalingMode mode)
 {
-  return Host::TranslateToCString("DisplayScalingMode", s_display_scaling_display_names[static_cast<int>(mode)]);
+  return Host::TranslateToCString("Settings", s_display_scaling_display_names[static_cast<size_t>(mode)],
+                                  "DisplayScalingMode");
 }
 
 static constexpr const std::array s_display_exclusive_fullscreen_mode_names = {
@@ -1534,9 +1630,9 @@ static constexpr const std::array s_display_exclusive_fullscreen_mode_names = {
   "Allowed",
 };
 static constexpr const std::array s_display_exclusive_fullscreen_mode_display_names = {
-  TRANSLATE_NOOP("Settings", "Automatic"),
-  TRANSLATE_NOOP("Settings", "Disallowed"),
-  TRANSLATE_NOOP("Settings", "Allowed"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Automatic", "DisplayExclusiveFullscreenControl"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Disallowed", "DisplayExclusiveFullscreenControl"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Allowed", "DisplayExclusiveFullscreenControl"),
 };
 
 std::optional<DisplayExclusiveFullscreenControl> Settings::ParseDisplayExclusiveFullscreenControl(const char* str)
@@ -1555,13 +1651,14 @@ std::optional<DisplayExclusiveFullscreenControl> Settings::ParseDisplayExclusive
 
 const char* Settings::GetDisplayExclusiveFullscreenControlName(DisplayExclusiveFullscreenControl mode)
 {
-  return s_display_exclusive_fullscreen_mode_names[static_cast<int>(mode)];
+  return s_display_exclusive_fullscreen_mode_names[static_cast<size_t>(mode)];
 }
 
 const char* Settings::GetDisplayExclusiveFullscreenControlDisplayName(DisplayExclusiveFullscreenControl mode)
 {
   return Host::TranslateToCString("Settings",
-                                  s_display_exclusive_fullscreen_mode_display_names[static_cast<int>(mode)]);
+                                  s_display_exclusive_fullscreen_mode_display_names[static_cast<size_t>(mode)],
+                                  "DisplayExclusiveFullscreenControl");
 }
 
 static constexpr const std::array s_display_screenshot_mode_names = {
@@ -1570,9 +1667,9 @@ static constexpr const std::array s_display_screenshot_mode_names = {
   "UncorrectedInternalResolution",
 };
 static constexpr const std::array s_display_screenshot_mode_display_names = {
-  TRANSLATE_NOOP("Settings", "Screen Resolution"),
-  TRANSLATE_NOOP("Settings", "Internal Resolution"),
-  TRANSLATE_NOOP("Settings", "Internal Resolution (Aspect Uncorrected)"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Screen Resolution", "DisplayScreenshotMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Internal Resolution", "DisplayScreenshotMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Internal Resolution (Aspect Uncorrected)", "DisplayScreenshotMode"),
 };
 
 std::optional<DisplayScreenshotMode> Settings::ParseDisplayScreenshotMode(const char* str)
@@ -1596,7 +1693,8 @@ const char* Settings::GetDisplayScreenshotModeName(DisplayScreenshotMode mode)
 
 const char* Settings::GetDisplayScreenshotModeDisplayName(DisplayScreenshotMode mode)
 {
-  return Host::TranslateToCString("Settings", s_display_screenshot_mode_display_names[static_cast<size_t>(mode)]);
+  return Host::TranslateToCString("Settings", s_display_screenshot_mode_display_names[static_cast<size_t>(mode)],
+                                  "DisplayScreenshotMode");
 }
 
 static constexpr const std::array s_display_screenshot_format_names = {
@@ -1605,9 +1703,9 @@ static constexpr const std::array s_display_screenshot_format_names = {
   "WebP",
 };
 static constexpr const std::array s_display_screenshot_format_display_names = {
-  TRANSLATE_NOOP("Settings", "PNG"),
-  TRANSLATE_NOOP("Settings", "JPEG"),
-  TRANSLATE_NOOP("Settings", "WebP"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "PNG", "DisplayScreenshotFormat"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "JPEG", "DisplayScreenshotFormat"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "WebP", "DisplayScreenshotFormat"),
 };
 static constexpr const std::array s_display_screenshot_format_extensions = {
   "png",
@@ -1636,7 +1734,8 @@ const char* Settings::GetDisplayScreenshotFormatName(DisplayScreenshotFormat for
 
 const char* Settings::GetDisplayScreenshotFormatDisplayName(DisplayScreenshotFormat mode)
 {
-  return Host::TranslateToCString("Settings", s_display_screenshot_format_display_names[static_cast<size_t>(mode)]);
+  return Host::TranslateToCString("Settings", s_display_screenshot_format_display_names[static_cast<size_t>(mode)],
+                                  "DisplayScreenshotFormat");
 }
 
 const char* Settings::GetDisplayScreenshotFormatExtension(DisplayScreenshotFormat format)
@@ -1644,15 +1743,17 @@ const char* Settings::GetDisplayScreenshotFormatExtension(DisplayScreenshotForma
   return s_display_screenshot_format_extensions[static_cast<size_t>(format)];
 }
 
-static constexpr const std::array s_memory_card_type_names = {"None",         "Shared",           "PerGame",
-                                                              "PerGameTitle", "PerGameFileTitle", "NonPersistent"};
+static constexpr const std::array s_memory_card_type_names = {
+  "None", "Shared", "PerGame", "PerGameTitle", "PerGameFileTitle", "NonPersistent",
+};
 static constexpr const std::array s_memory_card_type_display_names = {
-  TRANSLATE_NOOP("MemoryCardType", "No Memory Card"),
-  TRANSLATE_NOOP("MemoryCardType", "Shared Between All Games"),
-  TRANSLATE_NOOP("MemoryCardType", "Separate Card Per Game (Serial)"),
-  TRANSLATE_NOOP("MemoryCardType", "Separate Card Per Game (Title)"),
-  TRANSLATE_NOOP("MemoryCardType", "Separate Card Per Game (File Title)"),
-  TRANSLATE_NOOP("MemoryCardType", "Non-Persistent Card (Do Not Save)")};
+  TRANSLATE_DISAMBIG_NOOP("Settings", "No Memory Card", "MemoryCardType"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Shared Between All Games", "MemoryCardType"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Separate Card Per Game (Serial)", "MemoryCardType"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Separate Card Per Game (Title)", "MemoryCardType"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Separate Card Per Game (File Title)", "MemoryCardType"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Non-Persistent Card (Do Not Save)", "MemoryCardType"),
+};
 
 std::optional<MemoryCardType> Settings::ParseMemoryCardTypeName(const char* str)
 {
@@ -1670,12 +1771,13 @@ std::optional<MemoryCardType> Settings::ParseMemoryCardTypeName(const char* str)
 
 const char* Settings::GetMemoryCardTypeName(MemoryCardType type)
 {
-  return s_memory_card_type_names[static_cast<int>(type)];
+  return s_memory_card_type_names[static_cast<size_t>(type)];
 }
 
 const char* Settings::GetMemoryCardTypeDisplayName(MemoryCardType type)
 {
-  return Host::TranslateToCString("MemoryCardType", s_memory_card_type_display_names[static_cast<int>(type)]);
+  return Host::TranslateToCString("Settings", s_memory_card_type_display_names[static_cast<size_t>(type)],
+                                  "MemoryCardType");
 }
 
 std::string Settings::GetDefaultSharedMemoryCardName(u32 slot)
@@ -1702,10 +1804,18 @@ std::string Settings::GetGameMemoryCardPath(std::string_view serial, u32 slot)
   return Path::Combine(EmuFolders::MemoryCards, fmt::format("{}_{}.mcd", serial, slot + 1));
 }
 
-static constexpr const std::array s_multitap_enable_mode_names = {"Disabled", "Port1Only", "Port2Only", "BothPorts"};
+static constexpr const std::array s_multitap_enable_mode_names = {
+  "Disabled",
+  "Port1Only",
+  "Port2Only",
+  "BothPorts",
+};
 static constexpr const std::array s_multitap_enable_mode_display_names = {
-  TRANSLATE_NOOP("MultitapMode", "Disabled"), TRANSLATE_NOOP("MultitapMode", "Enable on Port 1 Only"),
-  TRANSLATE_NOOP("MultitapMode", "Enable on Port 2 Only"), TRANSLATE_NOOP("MultitapMode", "Enable on Ports 1 and 2")};
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Disabled", "MultitapMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Enable on Port 1 Only", "MultitapMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Enable on Port 2 Only", "MultitapMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Enable on Ports 1 and 2", "MultitapMode"),
+};
 
 std::optional<MultitapMode> Settings::ParseMultitapModeName(const char* str)
 {
@@ -1728,7 +1838,8 @@ const char* Settings::GetMultitapModeName(MultitapMode mode)
 
 const char* Settings::GetMultitapModeDisplayName(MultitapMode mode)
 {
-  return Host::TranslateToCString("MultitapMode", s_multitap_enable_mode_display_names[static_cast<size_t>(mode)]);
+  return Host::TranslateToCString("Settings", s_multitap_enable_mode_display_names[static_cast<size_t>(mode)],
+                                  "MultitapMode");
 }
 
 static constexpr const std::array s_mechacon_version_names = {"VC0A", "VC0B", "VC1A", "VC1B", "VD1",  "VC2", "VC1",
@@ -1762,6 +1873,47 @@ const char* Settings::GetCDROMMechVersionDisplayName(CDROMMechaconVersion mode)
   return s_mechacon_version_display_names[static_cast<size_t>(mode)];
 }
 
+static constexpr const std::array s_save_state_compression_mode_names = {
+  "Uncompressed", "DeflateLow", "DeflateDefault", "DeflateHigh", "ZstLow", "ZstDefault", "ZstHigh",
+};
+static constexpr const std::array s_save_state_compression_mode_display_names = {
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Uncompressed", "SaveStateCompressionMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Deflate (Low)", "SaveStateCompressionMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Deflate (Default)", "SaveStateCompressionMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Deflate (High)", "SaveStateCompressionMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Zstandard (Low)", "SaveStateCompressionMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Zstandard (Default)", "SaveStateCompressionMode"),
+  TRANSLATE_DISAMBIG_NOOP("Settings", "Zstandard (High)", "SaveStateCompressionMode"),
+};
+static_assert(s_save_state_compression_mode_names.size() == static_cast<size_t>(SaveStateCompressionMode::Count));
+static_assert(s_save_state_compression_mode_display_names.size() ==
+              static_cast<size_t>(SaveStateCompressionMode::Count));
+
+std::optional<SaveStateCompressionMode> Settings::ParseSaveStateCompressionModeName(const char* str)
+{
+  u32 index = 0;
+  for (const char* name : s_save_state_compression_mode_names)
+  {
+    if (StringUtil::Strcasecmp(name, str) == 0)
+      return static_cast<SaveStateCompressionMode>(index);
+
+    index++;
+  }
+
+  return std::nullopt;
+}
+
+const char* Settings::GetSaveStateCompressionModeName(SaveStateCompressionMode mode)
+{
+  return s_save_state_compression_mode_names[static_cast<size_t>(mode)];
+}
+
+const char* Settings::GetSaveStateCompressionModeDisplayName(SaveStateCompressionMode mode)
+{
+  return Host::TranslateToCString("Settings", s_save_state_compression_mode_display_names[static_cast<size_t>(mode)],
+                                  "SaveStateCompressionMode");
+}
+
 std::string EmuFolders::AppRoot;
 std::string EmuFolders::DataRoot;
 std::string EmuFolders::Bios;
@@ -1779,6 +1931,7 @@ std::string EmuFolders::Screenshots;
 std::string EmuFolders::Shaders;
 std::string EmuFolders::Textures;
 std::string EmuFolders::UserResources;
+std::string EmuFolders::Videos;
 
 void EmuFolders::SetDefaults()
 {
@@ -1796,6 +1949,7 @@ void EmuFolders::SetDefaults()
   Shaders = Path::Combine(DataRoot, "shaders");
   Textures = Path::Combine(DataRoot, "textures");
   UserResources = Path::Combine(DataRoot, "resources");
+  Videos = Path::Combine(DataRoot, "videos");
 }
 
 static std::string LoadPathFromSettings(SettingsInterface& si, const std::string& root, const char* section,
@@ -1826,6 +1980,7 @@ void EmuFolders::LoadConfig(SettingsInterface& si)
   Shaders = LoadPathFromSettings(si, DataRoot, "Folders", "Shaders", "shaders");
   Textures = LoadPathFromSettings(si, DataRoot, "Folders", "Textures", "textures");
   UserResources = LoadPathFromSettings(si, DataRoot, "Folders", "UserResources", "resources");
+  Videos = LoadPathFromSettings(si, DataRoot, "Folders", "Videos", "videos");
 
   DEV_LOG("BIOS Directory: {}", Bios);
   DEV_LOG("Cache Directory: {}", Cache);
@@ -1842,6 +1997,7 @@ void EmuFolders::LoadConfig(SettingsInterface& si)
   DEV_LOG("Shaders Directory: {}", Shaders);
   DEV_LOG("Textures Directory: {}", Textures);
   DEV_LOG("User Resources Directory: {}", UserResources);
+  DEV_LOG("Videos Directory: {}", Videos);
 }
 
 void EmuFolders::Save(SettingsInterface& si)
@@ -1861,6 +2017,7 @@ void EmuFolders::Save(SettingsInterface& si)
   si.SetStringValue("Folders", "Shaders", Path::MakeRelative(Shaders, DataRoot).c_str());
   si.SetStringValue("Folders", "Textures", Path::MakeRelative(Textures, DataRoot).c_str());
   si.SetStringValue("Folders", "UserResources", Path::MakeRelative(UserResources, DataRoot).c_str());
+  si.SetStringValue("Folders", "Videos", Path::MakeRelative(Videos, DataRoot).c_str());
 }
 
 void EmuFolders::Update()
@@ -1887,8 +2044,7 @@ bool EmuFolders::EnsureFoldersExist()
 {
   bool result = FileSystem::EnsureDirectoryExists(Bios.c_str(), false);
   result = FileSystem::EnsureDirectoryExists(Cache.c_str(), false) && result;
-  result = FileSystem::EnsureDirectoryExists(Path::Combine(Cache, "achievement_badge").c_str(), false) && result;
-  result = FileSystem::EnsureDirectoryExists(Path::Combine(Cache, "achievement_gameicon").c_str(), false) && result;
+  result = FileSystem::EnsureDirectoryExists(Path::Combine(Cache, "achievement_images").c_str(), false) && result;
   result = FileSystem::EnsureDirectoryExists(Cheats.c_str(), false) && result;
   result = FileSystem::EnsureDirectoryExists(Covers.c_str(), false) && result;
   result = FileSystem::EnsureDirectoryExists(Dumps.c_str(), false) && result;
@@ -1910,6 +2066,7 @@ bool EmuFolders::EnsureFoldersExist()
            result;
   result = FileSystem::EnsureDirectoryExists(Textures.c_str(), false) && result;
   result = FileSystem::EnsureDirectoryExists(UserResources.c_str(), false) && result;
+  result = FileSystem::EnsureDirectoryExists(Videos.c_str(), false) && result;
   return result;
 }
 

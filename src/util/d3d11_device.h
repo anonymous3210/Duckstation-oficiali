@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -35,8 +35,6 @@ public:
   ALWAYS_INLINE static ID3D11Device* GetD3DDevice() { return GetInstance().m_device.Get(); }
   ALWAYS_INLINE static ID3D11DeviceContext1* GetD3DContext() { return GetInstance().m_context.Get(); }
   ALWAYS_INLINE static D3D_FEATURE_LEVEL GetMaxFeatureLevel() { return GetInstance().m_max_feature_level; }
-
-  RenderAPI GetRenderAPI() const override;
 
   bool HasSurface() const override;
 
@@ -104,17 +102,16 @@ public:
   bool SetGPUTimingEnabled(bool enabled) override;
   float GetAndResetAccumulatedGPUTime() override;
 
-  bool BeginPresent(bool skip_present) override;
-  void EndPresent(bool explicit_present) override;
+  PresentResult BeginPresent(u32 clear_color) override;
+  void EndPresent(bool explicit_present, u64 present_time) override;
   void SubmitPresent() override;
 
   void UnbindPipeline(D3D11Pipeline* pl);
   void UnbindTexture(D3D11Texture* tex);
 
 protected:
-  bool CreateDevice(std::string_view adapter, bool threaded_presentation,
-                    std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features,
-                    Error* error) override;
+  bool CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
+                    FeatureMask disabled_features, Error* error) override;
   void DestroyDevice() override;
 
 private:

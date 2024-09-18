@@ -1,9 +1,7 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 // TODO: Don't poll when booting the game, e.g. Crash Warped freaks out.
-
-#define IMGUI_DEFINE_MATH_OPERATORS
 
 #include "achievements.h"
 #include "achievements_private.h"
@@ -26,6 +24,7 @@
 #include "common/scoped_guard.h"
 #include "common/small_string.h"
 #include "common/string_util.h"
+#include "common/timer.h"
 
 #include "util/cd_image.h"
 #include "util/http_downloader.h"
@@ -34,12 +33,13 @@
 #include "util/platform_misc.h"
 #include "util/state_wrapper.h"
 
+#include "IconsEmoji.h"
 #include "IconsFontAwesome5.h"
 #include "IconsPromptFont.h"
 #include "fmt/format.h"
 #include "imgui.h"
 #include "imgui_internal.h"
-#include "imgui_stdlib.h"
+#include "rc_api_runtime.h"
 #include "rc_client.h"
 
 #include <algorithm>
@@ -49,6 +49,7 @@
 #include <ctime>
 #include <functional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 Log_SetChannel(Achievements);
@@ -66,6 +67,10 @@ static constexpr const char* INFO_SOUND_NAME = "sounds/achievements/message.wav"
 static constexpr const char* UNLOCK_SOUND_NAME = "sounds/achievements/unlock.wav";
 static constexpr const char* LBSUBMIT_SOUND_NAME = "sounds/achievements/lbsubmit.wav";
 static constexpr const char* ACHEIVEMENT_DETAILS_URL_TEMPLATE = "https://retroachievements.org/achievement/{}";
+static constexpr const char* PROFILE_DETAILS_URL_TEMPLATE = "https://retroachievements.org/user/{}";
+static constexpr const char* CACHE_SUBDIRECTORY_NAME = "achievement_images";
+
+static constexpr size_t URL_BUFFER_SIZE = 256;
 
 static constexpr u32 LEADERBOARD_NEARBY_ENTRIES_TO_FETCH = 10;
 static constexpr u32 LEADERBOARD_ALL_FETCH_SIZE = 20;
@@ -123,7 +128,6 @@ template<typename... T>
 static void ReportFmtError(fmt::format_string<T...> fmt, T&&... args);
 template<typename... T>
 static void ReportRCError(int err, fmt::format_string<T...> fmt, T&&... args);
-static void EnsureCacheDirectoriesExist();
 static void ClearGameInfo();
 static void ClearGameHash();
 static std::string GetGameHash(CDImage* image);
@@ -136,7 +140,9 @@ static void IdentifyGame(const std::string& path, CDImage* image);
 static void BeginLoadGame();
 static void BeginChangeDisc();
 static void UpdateGameSummary();
+static std::string GetLocalImagePath(const std::string_view image_name, int type);
 static void DownloadImage(std::string url, std::string cache_filename);
+static void UpdateGlyphRanges();
 
 static bool CreateClient(rc_client_t** client, std::unique_ptr<HTTPDownloader>* http);
 static void DestroyClient(rc_client_t** client, std::unique_ptr<HTTPDownloader>* http);
@@ -194,13 +200,13 @@ static bool s_using_raintegration = false;
 
 static std::recursive_mutex s_achievements_mutex;
 static rc_client_t* s_client;
-static std::string s_image_directory;
 static std::unique_ptr<HTTPDownloader> s_http_downloader;
 
 static std::string s_game_path;
 static std::string s_game_hash;
 static std::string s_game_title;
 static std::string s_game_icon;
+static std::string s_game_icon_url;
 static rc_client_user_game_summary_t s_game_summary;
 static u32 s_game_id = 0;
 static DynamicHeapArray<u8> s_state_buffer;
@@ -307,6 +313,44 @@ std::string Achievements::GetGameHash(CDImage* image)
   return hash_str;
 }
 
+std::string Achievements::GetLocalImagePath(const std::string_view image_name, int type)
+{
+  std::string_view prefix;
+  std::string_view suffix;
+  switch (type)
+  {
+    case RC_IMAGE_TYPE_GAME:
+      prefix = "image"; // https://media.retroachievements.org/Images/{}.png
+      break;
+
+    case RC_IMAGE_TYPE_USER:
+      prefix = "user"; // https://media.retroachievements.org/UserPic/{}.png
+      break;
+
+    case RC_IMAGE_TYPE_ACHIEVEMENT: // https://media.retroachievements.org/Badge/{}.png
+      prefix = "badge";
+      break;
+
+    case RC_IMAGE_TYPE_ACHIEVEMENT_LOCKED:
+      prefix = "badge";
+      suffix = "_lock";
+      break;
+
+    default:
+      prefix = "badge";
+      break;
+  }
+
+  std::string ret;
+  if (!image_name.empty())
+  {
+    ret = fmt::format("{}" FS_OSPATH_SEPARATOR_STR "{}" FS_OSPATH_SEPARATOR_STR "{}_{}{}.png", EmuFolders::Cache,
+                      CACHE_SUBDIRECTORY_NAME, prefix, Path::SanitizeFileName(image_name), suffix);
+  }
+
+  return ret;
+}
+
 void Achievements::DownloadImage(std::string url, std::string cache_filename)
 {
   auto callback = [cache_filename](s32 status_code, const std::string& content_type,
@@ -324,6 +368,101 @@ void Achievements::DownloadImage(std::string url, std::string cache_filename)
   };
 
   s_http_downloader->CreateRequest(std::move(url), std::move(callback));
+}
+
+void Achievements::UpdateGlyphRanges()
+{
+  // To avoid rasterizing all emoji fonts, we get the set of used glyphs in the emoji range for all strings in the
+  // current game's achievement data.
+  using CodepointSet = std::unordered_set<ImGuiManager::WCharType>;
+  CodepointSet codepoints;
+
+  static constexpr auto add_string = [](const std::string_view str, CodepointSet& codepoints) {
+    char32_t codepoint;
+    for (size_t offset = 0; offset < str.length();)
+    {
+      offset += StringUtil::DecodeUTF8(str, offset, &codepoint);
+
+      // Basic Latin + Latin Supplement always included.
+      if (codepoint != StringUtil::UNICODE_REPLACEMENT_CHARACTER && codepoint >= 0x2000)
+        codepoints.insert(static_cast<ImGuiManager::WCharType>(codepoint));
+    }
+  };
+
+  if (rc_client_has_rich_presence(s_client))
+  {
+    std::vector<const char*> rp_strings;
+    for (;;)
+    {
+      rp_strings.resize(std::max<size_t>(rp_strings.size() * 2, 512));
+
+      size_t count;
+      const int err = rc_client_get_rich_presence_strings(s_client, rp_strings.data(), rp_strings.size(), &count);
+      if (err == RC_INSUFFICIENT_BUFFER)
+        continue;
+      else if (err != RC_OK)
+        rp_strings.clear();
+      else
+        rp_strings.resize(count);
+
+      break;
+    }
+
+    for (const char* str : rp_strings)
+      add_string(str, codepoints);
+  }
+
+  if (rc_client_has_achievements(s_client))
+  {
+    rc_client_achievement_list_t* const achievements =
+      rc_client_create_achievement_list(s_client, RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE_AND_UNOFFICIAL, 0);
+    if (achievements)
+    {
+      for (u32 i = 0; i < achievements->num_buckets; i++)
+      {
+        const rc_client_achievement_bucket_t& bucket = achievements->buckets[i];
+        for (u32 j = 0; j < bucket.num_achievements; j++)
+        {
+          const rc_client_achievement_t* achievement = bucket.achievements[j];
+          if (achievement->title)
+            add_string(achievement->title, codepoints);
+          if (achievement->description)
+            add_string(achievement->description, codepoints);
+        }
+      }
+      rc_client_destroy_achievement_list(achievements);
+    }
+  }
+
+  if (rc_client_has_leaderboards(s_client))
+  {
+    rc_client_leaderboard_list_t* const leaderboards =
+      rc_client_create_leaderboard_list(s_client, RC_CLIENT_LEADERBOARD_LIST_GROUPING_NONE);
+    if (leaderboards)
+    {
+      for (u32 i = 0; i < leaderboards->num_buckets; i++)
+      {
+        const rc_client_leaderboard_bucket_t& bucket = leaderboards->buckets[i];
+        for (u32 j = 0; j < bucket.num_leaderboards; j++)
+        {
+          const rc_client_leaderboard_t* leaderboard = bucket.leaderboards[j];
+          if (leaderboard->title)
+            add_string(leaderboard->title, codepoints);
+          if (leaderboard->description)
+            add_string(leaderboard->description, codepoints);
+        }
+      }
+      rc_client_destroy_leaderboard_list(leaderboards);
+    }
+  }
+
+  std::vector<ImGuiManager::WCharType> sorted_codepoints;
+  sorted_codepoints.reserve(codepoints.size());
+  sorted_codepoints.insert(sorted_codepoints.begin(), codepoints.begin(), codepoints.end());
+  std::sort(sorted_codepoints.begin(), sorted_codepoints.end());
+
+  // Compact codepoints to ranges.
+  ImGuiManager::SetEmojiFontRange(ImGuiManager::CompactFontRange(sorted_codepoints));
 }
 
 bool Achievements::IsActive()
@@ -385,6 +524,11 @@ const std::string& Achievements::GetGameIconPath()
   return s_game_icon;
 }
 
+const std::string& Achievements::GetGameIconURL()
+{
+  return s_game_icon_url;
+}
+
 const std::string& Achievements::GetRichPresenceString()
 {
   return s_rich_presence_string;
@@ -394,8 +538,6 @@ bool Achievements::Initialize()
 {
   if (IsUsingRAIntegration())
     return true;
-
-  EnsureCacheDirectoriesExist();
 
   auto lock = GetLock();
   AssertMsg(g_settings.achievements_enabled, "Achievements are enabled");
@@ -530,9 +672,6 @@ void Achievements::UpdateSettings(const Settings& old_config)
     if (g_settings.achievements_unofficial_test_mode != old_config.achievements_unofficial_test_mode)
       rc_client_set_unofficial_enabled(s_client, g_settings.achievements_unofficial_test_mode);
   }
-
-  // in case cache directory changed
-  EnsureCacheDirectoriesExist();
 }
 
 bool Achievements::Shutdown(bool allow_cancel)
@@ -558,6 +697,7 @@ bool Achievements::Shutdown(bool allow_cancel)
   ClearGameInfo();
   ClearGameHash();
   DisableHardcoreMode();
+  UpdateGlyphRanges();
 
   if (s_load_game_request)
   {
@@ -575,17 +715,6 @@ bool Achievements::Shutdown(bool allow_cancel)
 
   Host::OnAchievementsRefreshed();
   return true;
-}
-
-void Achievements::EnsureCacheDirectoriesExist()
-{
-  s_image_directory = Path::Combine(EmuFolders::Cache, "achievement_images");
-
-  if (!FileSystem::DirectoryExists(s_image_directory.c_str()) &&
-      !FileSystem::CreateDirectory(s_image_directory.c_str(), false))
-  {
-    ReportFmtError("Failed to create cache directory '{}'", s_image_directory);
-  }
 }
 
 void Achievements::ClientMessageCallback(const char* message, const rc_client_t* client)
@@ -892,6 +1021,7 @@ void Achievements::BeginLoadGame()
     }
 
     DisableHardcoreMode();
+    UpdateGlyphRanges();
     return;
   }
 
@@ -920,6 +1050,7 @@ void Achievements::BeginChangeDisc()
 
     ClearGameInfo();
     DisableHardcoreMode();
+    UpdateGlyphRanges();
     return;
   }
 
@@ -939,7 +1070,10 @@ void Achievements::ClientLoadGameCallback(int result, const char* error_message,
     // Unknown game.
     INFO_LOG("Unknown game '{}', disabling achievements.", s_game_hash);
     if (was_disc_change)
+    {
       ClearGameInfo();
+      UpdateGlyphRanges();
+    }
 
     DisableHardcoreMode();
     return;
@@ -954,7 +1088,10 @@ void Achievements::ClientLoadGameCallback(int result, const char* error_message,
   {
     ReportFmtError("Loading game failed: {}", error_message);
     if (was_disc_change)
+    {
       ClearGameInfo();
+      UpdateGlyphRanges();
+    }
 
     DisableHardcoreMode();
     return;
@@ -972,7 +1109,10 @@ void Achievements::ClientLoadGameCallback(int result, const char* error_message,
   {
     ReportError("rc_client_get_game_info() returned NULL");
     if (was_disc_change)
+    {
       ClearGameInfo();
+      UpdateGlyphRanges();
+    }
 
     DisableHardcoreMode();
     return;
@@ -997,28 +1137,23 @@ void Achievements::ClientLoadGameCallback(int result, const char* error_message,
   s_has_achievements = has_achievements;
   s_has_leaderboards = has_leaderboards;
   s_has_rich_presence = rc_client_has_rich_presence(client);
-  s_game_icon = {};
+
+  // update ranges before initializing fsui
+  UpdateGlyphRanges();
 
   // ensure fullscreen UI is ready for notifications
   if (display_summary)
     FullscreenUI::Initialize();
 
-  if (const std::string_view badge_name = info->badge_name; !badge_name.empty())
-  {
-    s_game_icon = Path::Combine(s_image_directory, fmt::format("game_{}.png", info->id));
-    if (!FileSystem::FileExists(s_game_icon.c_str()))
-    {
-      char buf[512];
-      if (int err = rc_client_game_get_image_url(info, buf, std::size(buf)); err == RC_OK)
-      {
-        DownloadImage(buf, s_game_icon);
-      }
-      else
-      {
-        ReportRCError(err, "rc_client_game_get_image_url() failed: ");
-      }
-    }
-  }
+  char url_buf[URL_BUFFER_SIZE];
+  if (int err = rc_client_game_get_image_url(info, url_buf, std::size(url_buf)); err == RC_OK)
+    s_game_icon_url = url_buf;
+  else
+    ReportRCError(err, "rc_client_game_get_image_url() failed: ");
+
+  s_game_icon = GetLocalImagePath(info->badge_name, RC_IMAGE_TYPE_GAME);
+  if (!s_game_icon.empty() && !s_game_icon_url.empty() && !FileSystem::FileExists(s_game_icon.c_str()))
+    DownloadImage(s_game_icon_url, s_game_icon);
 
   UpdateGameSummary();
   if (display_summary)
@@ -1044,6 +1179,7 @@ void Achievements::ClearGameInfo()
   s_game_id = 0;
   s_game_title = {};
   s_game_icon = {};
+  s_game_icon_url = {};
   s_state_buffer.deallocate();
   s_has_achievements = false;
   s_has_leaderboards = false;
@@ -1151,11 +1287,11 @@ void Achievements::HandleGameCompleteEvent(const rc_client_event_t* event)
   if (g_settings.achievements_notifications && FullscreenUI::Initialize())
   {
     std::string title = fmt::format(TRANSLATE_FS("Achievements", "Mastered {}"), s_game_title);
-    std::string message =
-      fmt::format(TRANSLATE_FS("Achievements", "{0}, {1}"),
-                  TRANSLATE_PLURAL_STR("Achievements", "%n achievements", "Mastery popup",
-                                       s_game_summary.num_unlocked_achievements),
-                  TRANSLATE_PLURAL_STR("Achievements", "%n points", "Mastery popup", s_game_summary.points_unlocked));
+    std::string message = fmt::format(
+      TRANSLATE_FS("Achievements", "{0}, {1}"),
+      TRANSLATE_PLURAL_STR("Achievements", "%n achievements", "Mastery popup",
+                           s_game_summary.num_unlocked_achievements),
+      TRANSLATE_PLURAL_STR("Achievements", "%n points", "Achievement points", s_game_summary.points_unlocked));
 
     ImGuiFullscreen::AddNotification("achievement_mastery", GAME_COMPLETE_NOTIFICATION_TIME, std::move(title),
                                      std::move(message), s_game_icon);
@@ -1618,20 +1754,12 @@ bool Achievements::DoState(StateWrapper& sw)
 std::string Achievements::GetAchievementBadgePath(const rc_client_achievement_t* achievement, int state,
                                                   bool download_if_missing)
 {
-  static constexpr std::array<const char*, NUM_RC_CLIENT_ACHIEVEMENT_STATES> s_achievement_state_strings = {
-    {"inactive", "active", "unlocked", "disabled"}};
-
-  std::string path;
-
-  if (achievement->badge_name[0] == 0)
-    return path;
-
-  path = Path::Combine(s_image_directory, TinyString::from_format("achievement_{}_{}_{}.png", s_game_id,
-                                                                  achievement->id, s_achievement_state_strings[state]));
-
-  if (download_if_missing && !FileSystem::FileExists(path.c_str()))
+  const std::string path = GetLocalImagePath(achievement->badge_name, (state == RC_CLIENT_ACHIEVEMENT_STATE_UNLOCKED) ?
+                                                                        RC_IMAGE_TYPE_ACHIEVEMENT :
+                                                                        RC_IMAGE_TYPE_ACHIEVEMENT_LOCKED);
+  if (download_if_missing && !path.empty() && !FileSystem::FileExists(path.c_str()))
   {
-    char buf[512];
+    char buf[URL_BUFFER_SIZE];
     const int res = rc_client_achievement_get_image_url(achievement, state, buf, std::size(buf));
     if (res == RC_OK)
       DownloadImage(buf, path);
@@ -1642,24 +1770,14 @@ std::string Achievements::GetAchievementBadgePath(const rc_client_achievement_t*
   return path;
 }
 
-std::string Achievements::GetUserBadgePath(std::string_view username)
-{
-  // definitely want to sanitize usernames... :)
-  std::string path;
-  const std::string clean_username = Path::SanitizeFileName(username);
-  if (!clean_username.empty())
-    path = Path::Combine(s_image_directory, TinyString::from_format("user_{}.png", clean_username));
-  return path;
-}
-
 std::string Achievements::GetLeaderboardUserBadgePath(const rc_client_leaderboard_entry_t* entry)
 {
   // TODO: maybe we should just cache these in memory...
-  std::string path = GetUserBadgePath(entry->user);
+  const std::string path = GetLocalImagePath(entry->user, RC_IMAGE_TYPE_USER);
 
   if (!FileSystem::FileExists(path.c_str()))
   {
-    char buf[512];
+    char buf[URL_BUFFER_SIZE];
     const int res = rc_client_leaderboard_entry_get_user_image_url(entry, buf, std::size(buf));
     if (res == RC_OK)
       DownloadImage(buf, path);
@@ -1837,10 +1955,10 @@ std::string Achievements::GetLoggedInUserBadgePath()
   if (!user) [[unlikely]]
     return badge_path;
 
-  badge_path = GetUserBadgePath(user->username);
-  if (!FileSystem::FileExists(badge_path.c_str())) [[unlikely]]
+  badge_path = GetLocalImagePath(user->username, RC_IMAGE_TYPE_USER);
+  if (!badge_path.empty() && !FileSystem::FileExists(badge_path.c_str())) [[unlikely]]
   {
-    char url[512];
+    char url[URL_BUFFER_SIZE];
     const int res = rc_client_user_get_image_url(user, url, std::size(url));
     if (res == RC_OK)
       DownloadImage(url, badge_path);
@@ -1858,7 +1976,10 @@ void Achievements::Logout()
     const auto lock = GetLock();
 
     if (HasActiveGame())
+    {
       ClearGameInfo();
+      UpdateGlyphRanges();
+    }
 
     INFO_LOG("Logging out...");
     rc_client_logout(s_client);
@@ -2243,6 +2364,7 @@ void Achievements::DrawAchievementsWindow()
   const ImVec4 heading_background = ImGuiFullscreen::ModAlpha(ImGuiFullscreen::UIBackgroundColor, heading_alpha);
   const ImVec2 display_size = ImGui::GetIO().DisplaySize;
   const float heading_height = ImGuiFullscreen::LayoutScale(heading_height_unscaled);
+  bool close_window = false;
 
   if (ImGuiFullscreen::BeginFullscreenWindow(
         ImVec2(), ImVec2(display_size.x, heading_height), "achievements_heading", heading_background, 0.0f, ImVec2(),
@@ -2278,12 +2400,9 @@ void Achievements::DrawAchievementsWindow()
       SmallString text;
       ImVec2 text_size;
 
-      if (ImGuiFullscreen::FloatingButton(ICON_FA_WINDOW_CLOSE, 10.0f, 10.0f, -1.0f, -1.0f, 1.0f, 0.0f, true,
-                                          g_large_font) ||
-          ImGuiFullscreen::WantsToCloseMenu())
-      {
-        FullscreenUI::ReturnToPreviousWindow();
-      }
+      close_window = (ImGuiFullscreen::FloatingButton(ICON_FA_WINDOW_CLOSE, 10.0f, 10.0f, -1.0f, -1.0f, 1.0f, 0.0f,
+                                                      true, g_large_font) ||
+                      ImGuiFullscreen::WantsToCloseMenu());
 
       const ImRect title_bb(ImVec2(left, top), ImVec2(right, top + g_large_font->FontSize));
       text.assign(s_game_title);
@@ -2303,8 +2422,8 @@ void Achievements::DrawAchievementsWindow()
       {
         if (s_game_summary.num_unlocked_achievements == s_game_summary.num_core_achievements)
         {
-          text.format(TRANSLATE_FS("Achievements", "You have unlocked all achievements and earned {} points!"),
-                      s_game_summary.points_unlocked);
+          text = TRANSLATE_PLURAL_SSTR("Achievements", "You have unlocked all achievements and earned %n points!",
+                                       "Point count", s_game_summary.points_unlocked);
         }
         else
         {
@@ -2352,6 +2471,10 @@ void Achievements::DrawAchievementsWindow()
 
   ImGui::SetNextWindowBgAlpha(alpha);
 
+  // See note in FullscreenUI::DrawSettingsWindow().
+  if (ImGuiFullscreen::IsFocusResetFromWindowChange())
+    ImGui::SetNextWindowScroll(ImVec2(0.0f, 0.0f));
+
   if (ImGuiFullscreen::BeginFullscreenWindow(
         ImVec2(0.0f, heading_height),
         ImVec2(display_size.x, display_size.y - heading_height - LayoutScale(ImGuiFullscreen::LAYOUT_FOOTER_HEIGHT)),
@@ -2365,6 +2488,7 @@ void Achievements::DrawAchievementsWindow()
       TRANSLATE_NOOP("Achievements", "Active Challenges"), TRANSLATE_NOOP("Achievements", "Almost There"),
     };
 
+    ImGuiFullscreen::ResetFocusHere();
     ImGuiFullscreen::BeginMenuButtons();
 
     for (u32 bucket_type : {RC_CLIENT_ACHIEVEMENT_BUCKET_ACTIVE_CHALLENGE,
@@ -2397,7 +2521,17 @@ void Achievements::DrawAchievementsWindow()
   }
   ImGuiFullscreen::EndFullscreenWindow();
 
-  FullscreenUI::SetStandardSelectionFooterText(true);
+  ImGuiFullscreen::SetFullscreenFooterText(
+    std::array{std::make_pair(ImGuiFullscreen::IsGamepadInputSource() ? ICON_PF_XBOX_DPAD_UP_DOWN :
+                                                                        ICON_PF_ARROW_UP ICON_PF_ARROW_DOWN,
+                              TRANSLATE_SV("Achievements", "Change Selection")),
+               std::make_pair(ImGuiFullscreen::IsGamepadInputSource() ? ICON_PF_BUTTON_A : ICON_PF_ENTER,
+                              TRANSLATE_SV("Achievements", "View Details")),
+               std::make_pair(ImGuiFullscreen::IsGamepadInputSource() ? ICON_PF_BUTTON_B : ICON_PF_ESC,
+                              TRANSLATE_SV("Achievements", "Back"))});
+
+  if (close_window)
+    FullscreenUI::ReturnToPreviousWindow();
 }
 
 void Achievements::DrawAchievement(const rc_client_achievement_t* cheevo)
@@ -2469,9 +2603,7 @@ void Achievements::DrawAchievement(const rc_client_achievement_t* cheevo)
   SmallString text;
 
   const float midpoint = bb.Min.y + g_large_font->FontSize + spacing;
-  text.format((cheevo->points != 1) ? TRANSLATE_FS("Achievements", "{} points") :
-                                      TRANSLATE_FS("Achievements", "{} point"),
-              cheevo->points);
+  text = TRANSLATE_PLURAL_SSTR("Achievements", "%n points", "Achievement points", cheevo->points);
   const ImVec2 points_size(
     g_medium_font->CalcTextSizeA(g_medium_font->FontSize, FLT_MAX, 0.0f, text.c_str(), text.end_ptr()));
   const float points_template_start = bb.Max.x - points_template_size.x;
@@ -2495,7 +2627,7 @@ void Achievements::DrawAchievement(const rc_client_achievement_t* cheevo)
       // Just use the lock for standard achievements.
     case RC_CLIENT_ACHIEVEMENT_TYPE_STANDARD:
     default:
-      right_icon_text = is_unlocked ? ICON_FA_LOCK_OPEN : ICON_FA_LOCK;
+      right_icon_text = is_unlocked ? ICON_EMOJI_UNLOCKED : ICON_FA_LOCK;
       break;
   }
 
@@ -2707,7 +2839,7 @@ void Achievements::DrawLeaderboardsWindow()
         u32 count = 0;
         for (u32 i = 0; i < s_leaderboard_list->num_buckets; i++)
           count += s_leaderboard_list->buckets[i].num_leaderboards;
-        text.format(TRANSLATE_FS("Achievements", "This game has {} leaderboards."), count);
+        text = TRANSLATE_PLURAL_SSTR("Achievements", "This game has %n leaderboards.", "Leaderboard count", count);
       }
 
       const ImRect summary_bb(ImVec2(left, top), ImVec2(right, top + g_medium_font->FontSize));
@@ -2736,10 +2868,13 @@ void Achievements::DrawLeaderboardsWindow()
         const float tab_width = (ImGui::GetWindowWidth() / ImGuiFullscreen::g_layout_scale) * 0.5f;
         ImGui::SetCursorPos(ImVec2(0.0f, top + spacing_small));
 
-        if (ImGui::IsKeyPressed(ImGuiKey_NavGamepadTweakSlow, false) ||
-            ImGui::IsKeyPressed(ImGuiKey_NavGamepadTweakFast, false))
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, false) ||
+            ImGui::IsKeyPressed(ImGuiKey_NavGamepadTweakSlow, false) ||
+            ImGui::IsKeyPressed(ImGuiKey_LeftArrow, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, false) ||
+            ImGui::IsKeyPressed(ImGuiKey_NavGamepadTweakFast, false) || ImGui::IsKeyPressed(ImGuiKey_RightArrow, false))
         {
           s_is_showing_all_leaderboard_entries = !s_is_showing_all_leaderboard_entries;
+          ImGuiFullscreen::QueueResetFocus(ImGuiFullscreen::FocusResetType::Other);
         }
 
         for (const bool show_all : {false, true})
@@ -2813,7 +2948,10 @@ void Achievements::DrawLeaderboardsWindow()
     }
   }
   ImGuiFullscreen::EndFullscreenWindow();
-  FullscreenUI::SetStandardSelectionFooterText(true);
+
+  // See note in FullscreenUI::DrawSettingsWindow().
+  if (ImGuiFullscreen::IsFocusResetFromWindowChange())
+    ImGui::SetNextWindowScroll(ImVec2(0.0f, 0.0f));
 
   if (!is_leaderboard_open)
   {
@@ -2822,6 +2960,7 @@ void Achievements::DrawLeaderboardsWindow()
           ImVec2(display_size.x, display_size.y - heading_height - LayoutScale(ImGuiFullscreen::LAYOUT_FOOTER_HEIGHT)),
           "leaderboards", background, 0.0f, ImVec2(ImGuiFullscreen::LAYOUT_MENU_WINDOW_X_PADDING, 0.0f), 0))
     {
+      ImGuiFullscreen::ResetFocusHere();
       ImGuiFullscreen::BeginMenuButtons();
 
       for (u32 bucket_index = 0; bucket_index < s_leaderboard_list->num_buckets; bucket_index++)
@@ -2834,6 +2973,15 @@ void Achievements::DrawLeaderboardsWindow()
       ImGuiFullscreen::EndMenuButtons();
     }
     ImGuiFullscreen::EndFullscreenWindow();
+
+    ImGuiFullscreen::SetFullscreenFooterText(
+      std::array{std::make_pair(ImGuiFullscreen::IsGamepadInputSource() ? ICON_PF_XBOX_DPAD_UP_DOWN :
+                                                                          ICON_PF_ARROW_UP ICON_PF_ARROW_DOWN,
+                                TRANSLATE_SV("Achievements", "Change Selection")),
+                 std::make_pair(ImGuiFullscreen::IsGamepadInputSource() ? ICON_PF_BUTTON_A : ICON_PF_ENTER,
+                                TRANSLATE_SV("Achievements", "Open Leaderboard")),
+                 std::make_pair(ImGuiFullscreen::IsGamepadInputSource() ? ICON_PF_BUTTON_B : ICON_PF_ESC,
+                                TRANSLATE_SV("Achievements", "Back"))});
   }
   else
   {
@@ -2842,6 +2990,13 @@ void Achievements::DrawLeaderboardsWindow()
           ImVec2(display_size.x, display_size.y - heading_height - LayoutScale(ImGuiFullscreen::LAYOUT_FOOTER_HEIGHT)),
           "leaderboard", background, 0.0f, ImVec2(ImGuiFullscreen::LAYOUT_MENU_WINDOW_X_PADDING, 0.0f), 0))
     {
+      // Defer focus reset until loading finishes.
+      if (!s_is_showing_all_leaderboard_entries ||
+          (ImGuiFullscreen::IsFocusResetFromWindowChange() && !s_leaderboard_entry_lists.empty()))
+      {
+        ImGuiFullscreen::ResetFocusHere();
+      }
+
       ImGuiFullscreen::BeginMenuButtons();
 
       if (!s_is_showing_all_leaderboard_entries)
@@ -2902,6 +3057,18 @@ void Achievements::DrawLeaderboardsWindow()
       ImGuiFullscreen::EndMenuButtons();
     }
     ImGuiFullscreen::EndFullscreenWindow();
+
+    ImGuiFullscreen::SetFullscreenFooterText(
+      std::array{std::make_pair(ImGuiFullscreen::IsGamepadInputSource() ? ICON_PF_XBOX_DPAD_LEFT_RIGHT :
+                                                                          ICON_PF_ARROW_LEFT ICON_PF_ARROW_RIGHT,
+                                TRANSLATE_SV("Achievements", "Change Page")),
+                 std::make_pair(ImGuiFullscreen::IsGamepadInputSource() ? ICON_PF_XBOX_DPAD_UP_DOWN :
+                                                                          ICON_PF_ARROW_UP ICON_PF_ARROW_DOWN,
+                                TRANSLATE_SV("Achievements", "Change Selection")),
+                 std::make_pair(ImGuiFullscreen::IsGamepadInputSource() ? ICON_PF_BUTTON_A : ICON_PF_ENTER,
+                                TRANSLATE_SV("Achievements", "View Profile")),
+                 std::make_pair(ImGuiFullscreen::IsGamepadInputSource() ? ICON_PF_BUTTON_B : ICON_PF_ESC,
+                                TRANSLATE_SV("Achievements", "Back"))});
   }
 
   if (close_leaderboard_on_exit)
@@ -2987,7 +3154,9 @@ void Achievements::DrawLeaderboardEntry(const rc_client_leaderboard_entry_t& ent
 
   if (pressed)
   {
-    // Anything?
+    const SmallString url = SmallString::from_format(fmt::runtime(PROFILE_DETAILS_URL_TEMPLATE), entry.user);
+    INFO_LOG("Opening profile details: {}", url);
+    Host::OpenURL(url);
   }
 }
 void Achievements::DrawLeaderboardListEntry(const rc_client_leaderboard_t* lboard)
@@ -3041,6 +3210,7 @@ void Achievements::OpenLeaderboard(const rc_client_leaderboard_t* lboard)
   s_is_showing_all_leaderboard_entries = false;
   s_leaderboard_fetch_handle = rc_client_begin_fetch_leaderboard_entries_around_user(
     s_client, lboard->id, LEADERBOARD_NEARBY_ENTRIES_TO_FETCH, LeaderboardFetchNearbyCallback, nullptr);
+  ImGuiFullscreen::QueueResetFocus(ImGuiFullscreen::FocusResetType::Other);
 }
 
 bool Achievements::OpenLeaderboardById(u32 leaderboard_id)
@@ -3146,6 +3316,7 @@ void Achievements::CloseLeaderboard()
   }
 
   s_open_leaderboard = nullptr;
+  ImGuiFullscreen::QueueResetFocus(ImGuiFullscreen::FocusResetType::Other);
 }
 
 #ifdef ENABLE_RAINTEGRATION

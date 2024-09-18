@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -18,7 +18,8 @@
 #include <string_view>
 #include <vector>
 
-enum class RenderAPI : u32;
+enum class RenderAPI : u8;
+enum class MediaCaptureBackend : u8;
 
 struct SettingInfo
 {
@@ -63,14 +64,14 @@ struct Settings
   ConsoleRegion region = DEFAULT_CONSOLE_REGION;
 
   CPUExecutionMode cpu_execution_mode = DEFAULT_CPU_EXECUTION_MODE;
-  u32 cpu_overclock_numerator = 1;
-  u32 cpu_overclock_denominator = 1;
+  CPUFastmemMode cpu_fastmem_mode = DEFAULT_CPU_FASTMEM_MODE;
   bool cpu_overclock_enable : 1 = false;
   bool cpu_overclock_active : 1 = false;
   bool cpu_recompiler_memory_exceptions : 1 = false;
   bool cpu_recompiler_block_linking : 1 = true;
   bool cpu_recompiler_icache : 1 = false;
-  CPUFastmemMode cpu_fastmem_mode = DEFAULT_CPU_FASTMEM_MODE;
+  u32 cpu_overclock_numerator = 1;
+  u32 cpu_overclock_denominator = 1;
 
   float emulation_speed = 1.0f;
   float fast_forward_speed = 0.0f;
@@ -84,7 +85,6 @@ struct Settings
   bool pause_on_controller_disconnection : 1 = false;
   bool save_state_on_exit : 1 = true;
   bool create_save_state_backups : 1 = DEFAULT_SAVE_STATE_BACKUPS;
-  bool compress_save_states : 1 = DEFAULT_SAVE_STATE_COMPRESSION;
   bool confim_power_off : 1 = true;
   bool load_devices_from_save_states : 1 = false;
   bool apply_compatibility_settings : 1 = true;
@@ -106,7 +106,6 @@ struct Settings
   u8 gpu_multisamples = 1;
   bool gpu_use_thread : 1 = true;
   bool gpu_use_software_renderer_for_readbacks : 1 = false;
-  bool gpu_threaded_presentation : 1 = DEFAULT_THREADED_PRESENTATION;
   bool gpu_use_debug_device : 1 = false;
   bool gpu_disable_shader_cache : 1 = false;
   bool gpu_disable_dual_source_blend : 1 = false;
@@ -121,8 +120,6 @@ struct Settings
   bool gpu_scaled_dithering : 1 = true;
   bool gpu_force_round_texcoords : 1 = false;
   bool gpu_accurate_blending : 1 = false;
-  bool gpu_disable_interlacing : 1 = true;
-  bool gpu_force_ntsc_timings : 1 = false;
   bool gpu_widescreen_hack : 1 = false;
   bool gpu_pgxp_enable : 1 = false;
   bool gpu_pgxp_culling : 1 = true;
@@ -133,6 +130,7 @@ struct Settings
   bool gpu_pgxp_preserve_proj_fp : 1 = false;
   bool gpu_pgxp_depth_buffer : 1 = false;
   bool gpu_pgxp_disable_2d : 1 = false;
+  ForceVideoTimingMode gpu_force_video_timing = DEFAULT_FORCE_VIDEO_TIMING_MODE;
   GPUTextureFilter gpu_texture_filter = DEFAULT_GPU_TEXTURE_FILTER;
   GPUTextureFilter gpu_sprite_texture_filter = DEFAULT_GPU_TEXTURE_FILTER;
   GPULineDetectMode gpu_line_detect_mode = DEFAULT_GPU_LINE_DETECT_MODE;
@@ -162,7 +160,6 @@ struct Settings
   bool display_disable_mailbox_presentation : 1 = true;
   bool display_force_4_3_for_24bit : 1 = false;
   bool display_24bit_chroma_smoothing : 1 = false;
-  bool display_show_osd_messages : 1 = true;
   bool display_show_fps : 1 = false;
   bool display_show_speed : 1 = false;
   bool display_show_gpu_stats : 1 = false;
@@ -175,10 +172,13 @@ struct Settings
   bool display_show_inputs : 1 = false;
   bool display_show_enhancements : 1 = false;
   bool display_stretch_vertically : 1 = false;
+  bool display_auto_resize_window : 1 = false;
   float display_pre_frame_sleep_buffer = DEFAULT_DISPLAY_PRE_FRAME_SLEEP_BUFFER;
   float display_osd_scale = 100.0f;
   float gpu_pgxp_tolerance = -1.0f;
   float gpu_pgxp_depth_clear_threshold = DEFAULT_GPU_PGXP_DEPTH_THRESHOLD / GPU_PGXP_DEPTH_THRESHOLD_SCALE;
+
+  SaveStateCompressionMode save_state_compression = DEFAULT_SAVE_STATE_COMPRESSION_MODE;
 
   u8 cdrom_readahead_sectors = DEFAULT_CDROM_READAHEAD_SECTORS;
   CDROMMechaconVersion cdrom_mechacon_version = DEFAULT_CDROM_MECHACON_VERSION;
@@ -199,6 +199,7 @@ struct Settings
 
   bool use_old_mdec_routines : 1 = false;
   bool pcdrv_enable : 1 = false;
+  bool export_shared_memory : 1 = false;
 
   // timing hacks section
   TickCount dma_max_slice_ticks = DEFAULT_DMA_MAX_SLICE_TICKS;
@@ -263,8 +264,6 @@ struct Settings
   bool enable_8mb_ram : 1 = false;
 
   std::array<ControllerType, NUM_CONTROLLER_AND_CARD_PORTS> controller_types{};
-  bool controller_disable_analog_mode_forcing = false;
-
   std::array<MemoryCardType, NUM_CONTROLLER_AND_CARD_PORTS> memory_card_types{};
   std::array<std::string, NUM_CONTROLLER_AND_CARD_PORTS> memory_card_paths{};
   bool memory_card_use_playlist_title = true;
@@ -277,7 +276,7 @@ struct Settings
   LOGLEVEL log_level = DEFAULT_LOG_LEVEL;
   std::string log_filter;
   bool log_timestamps : 1 = true;
-  bool log_to_console : 1 = DEFAULT_LOG_TO_CONSOLE;
+  bool log_to_console : 1 = false;
   bool log_to_debug : 1 = false;
   bool log_to_window : 1 = false;
   bool log_to_file : 1 = false;
@@ -353,7 +352,7 @@ struct Settings
     DEFAULT_VRAM_WRITE_DUMP_HEIGHT_THRESHOLD = 128,
   };
 
-  void Load(SettingsInterface& si);
+  void Load(SettingsInterface& si, SettingsInterface& controller_si);
   void Save(SettingsInterface& si, bool ignore_base) const;
   static void Clear(SettingsInterface& si);
 
@@ -433,6 +432,10 @@ struct Settings
   static const char* GetDisplayScalingName(DisplayScalingMode mode);
   static const char* GetDisplayScalingDisplayName(DisplayScalingMode mode);
 
+  static std::optional<ForceVideoTimingMode> ParseForceVideoTimingName(const char* str);
+  static const char* GetForceVideoTimingName(ForceVideoTimingMode mode);
+  static const char* GetForceVideoTimingDisplayName(ForceVideoTimingMode mode);
+
   static std::optional<DisplayExclusiveFullscreenControl> ParseDisplayExclusiveFullscreenControl(const char* str);
   static const char* GetDisplayExclusiveFullscreenControlName(DisplayExclusiveFullscreenControl mode);
   static const char* GetDisplayExclusiveFullscreenControlDisplayName(DisplayExclusiveFullscreenControl mode);
@@ -458,6 +461,10 @@ struct Settings
   static const char* GetCDROMMechVersionName(CDROMMechaconVersion mode);
   static const char* GetCDROMMechVersionDisplayName(CDROMMechaconVersion mode);
 
+  static std::optional<SaveStateCompressionMode> ParseSaveStateCompressionModeName(const char* str);
+  static const char* GetSaveStateCompressionModeName(SaveStateCompressionMode mode);
+  static const char* GetSaveStateCompressionModeDisplayName(SaveStateCompressionMode mode);
+
   static constexpr GPURenderer DEFAULT_GPU_RENDERER = GPURenderer::Automatic;
   static constexpr GPUTextureFilter DEFAULT_GPU_TEXTURE_FILTER = GPUTextureFilter::Nearest;
   static constexpr GPULineDetectMode DEFAULT_GPU_LINE_DETECT_MODE = GPULineDetectMode::Disabled;
@@ -481,12 +488,13 @@ struct Settings
   static constexpr CPUFastmemMode DEFAULT_CPU_FASTMEM_MODE = CPUFastmemMode::LUT;
 #endif
 
-  static constexpr DisplayDeinterlacingMode DEFAULT_DISPLAY_DEINTERLACING_MODE = DisplayDeinterlacingMode::Adaptive;
+  static constexpr DisplayDeinterlacingMode DEFAULT_DISPLAY_DEINTERLACING_MODE = DisplayDeinterlacingMode::Progressive;
   static constexpr DisplayCropMode DEFAULT_DISPLAY_CROP_MODE = DisplayCropMode::Overscan;
   static constexpr DisplayAspectRatio DEFAULT_DISPLAY_ASPECT_RATIO = DisplayAspectRatio::Auto;
   static constexpr DisplayAlignment DEFAULT_DISPLAY_ALIGNMENT = DisplayAlignment::Center;
   static constexpr DisplayRotation DEFAULT_DISPLAY_ROTATION = DisplayRotation::Normal;
   static constexpr DisplayScalingMode DEFAULT_DISPLAY_SCALING = DisplayScalingMode::BilinearSmooth;
+  static constexpr ForceVideoTimingMode DEFAULT_FORCE_VIDEO_TIMING_MODE = ForceVideoTimingMode::Disabled;
   static constexpr DisplayExclusiveFullscreenControl DEFAULT_DISPLAY_EXCLUSIVE_FULLSCREEN_CONTROL =
     DisplayExclusiveFullscreenControl::Automatic;
   static constexpr DisplayScreenshotMode DEFAULT_DISPLAY_SCREENSHOT_MODE = DisplayScreenshotMode::ScreenResolution;
@@ -509,24 +517,24 @@ struct Settings
 
   static constexpr LOGLEVEL DEFAULT_LOG_LEVEL = LOGLEVEL_INFO;
 
-  static constexpr bool DEFAULT_SAVE_STATE_COMPRESSION = true;
+  static constexpr SaveStateCompressionMode DEFAULT_SAVE_STATE_COMPRESSION_MODE = SaveStateCompressionMode::ZstDefault;
 
-  // Enable console logging by default on Linux platforms.
-#if defined(__linux__) && !defined(__ANDROID__)
-  static constexpr bool DEFAULT_LOG_TO_CONSOLE = true;
-#else
-  static constexpr bool DEFAULT_LOG_TO_CONSOLE = false;
+#ifndef __ANDROID__
+  static const MediaCaptureBackend DEFAULT_MEDIA_CAPTURE_BACKEND;
+  static constexpr const char* DEFAULT_MEDIA_CAPTURE_CONTAINER = "mp4";
+  static constexpr u32 DEFAULT_MEDIA_CAPTURE_VIDEO_WIDTH = 640;
+  static constexpr u32 DEFAULT_MEDIA_CAPTURE_VIDEO_HEIGHT = 480;
+  static constexpr u32 DEFAULT_MEDIA_CAPTURE_VIDEO_BITRATE = 6000;
+  static constexpr u32 DEFAULT_MEDIA_CAPTURE_AUDIO_BITRATE = 128;
 #endif
 
   // Android doesn't create settings until they're first opened, so we have to override the defaults here.
 #ifndef __ANDROID__
   static constexpr bool DEFAULT_SAVE_STATE_BACKUPS = true;
   static constexpr bool DEFAULT_FAST_BOOT_VALUE = false;
-  static constexpr bool DEFAULT_THREADED_PRESENTATION = false;
 #else
   static constexpr bool DEFAULT_SAVE_STATE_BACKUPS = false;
   static constexpr bool DEFAULT_FAST_BOOT_VALUE = true;
-  static constexpr bool DEFAULT_THREADED_PRESENTATION = true;
 #endif
 
   // PINE uses a concept of "slot" to be able to communicate with multiple
@@ -556,6 +564,7 @@ extern std::string Screenshots;
 extern std::string Shaders;
 extern std::string Textures;
 extern std::string UserResources;
+extern std::string Videos;
 
 // Assumes that AppRoot and DataRoot have been initialized.
 void SetDefaults();

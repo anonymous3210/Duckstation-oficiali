@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
+
+#include "types.h"
+
 #include "common/bitfield.h"
 #include "common/bitutils.h"
-#include "types.h"
+
 #include <optional>
 
 namespace CPU {
@@ -173,12 +176,15 @@ union Instruction
 
   union
   {
+    u32 bits;
     BitField<u32, Reg, 21, 5> rs;
     BitField<u32, Reg, 16, 5> rt;
     BitField<u32, u16, 0, 16> imm;
 
-    ALWAYS_INLINE u32 imm_sext32() const { return SignExtend32(imm.GetValue()); }
-    ALWAYS_INLINE u32 imm_zext32() const { return ZeroExtend32(imm.GetValue()); }
+    ALWAYS_INLINE s16 imm_s16() const { return static_cast<s16>(bits); }
+    ALWAYS_INLINE u16 imm_u16() const { return static_cast<u16>(bits); }
+    ALWAYS_INLINE u32 imm_sext32() const { return static_cast<u32>(static_cast<s32>(imm_s16())); }
+    ALWAYS_INLINE u32 imm_zext32() const { return static_cast<u32>(imm_u16()); }
   } i;
 
   union
@@ -188,6 +194,7 @@ union Instruction
 
   union
   {
+    u32 bits;
     BitField<u32, Reg, 21, 5> rs;
     BitField<u32, Reg, 16, 5> rt;
     BitField<u32, Reg, 11, 5> rd;

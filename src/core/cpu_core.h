@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -50,7 +50,7 @@ union CacheControl
   BitField<u32, bool, 11, 1> icache_enable;
 };
 
-struct PGXP_value
+struct PGXPValue
 {
   float x;
   float y;
@@ -58,13 +58,8 @@ struct PGXP_value
   u32 value;
   u32 flags;
 
-  ALWAYS_INLINE void SetValid(u32 comp, bool valid = true)
-  {
-    const u32 mask = (1u << comp);
-    flags = valid ? (flags | mask) : (flags & ~mask);
-  }
+  ALWAYS_INLINE void Validate(u32 psxval) { flags = (value == psxval) ? flags : 0; }
 
-  ALWAYS_INLINE bool HasValid(u32 comp) const { return ConvertToBoolUnchecked((flags >> comp) & 1); }
   ALWAYS_INLINE float GetValidX(u32 psxval) const
   {
     return (flags & 1) ? x : static_cast<float>(static_cast<s16>(psxval));
@@ -78,9 +73,9 @@ struct PGXP_value
 struct State
 {
   // ticks the CPU has executed
-  TickCount downcount = 0;
-  TickCount pending_ticks = 0;
-  TickCount gte_completion_tick = 0;
+  u32 downcount = 0;
+  u32 pending_ticks = 0;
+  u32 gte_completion_tick = 0;
 
   Registers regs = {};
   Cop0Registers cop0_regs = {};
@@ -117,9 +112,9 @@ struct State
   void* fastmem_base = nullptr;
   void** memory_handlers = nullptr;
 
-  PGXP_value pgxp_gpr[static_cast<u8>(Reg::count)] = {};
-  PGXP_value pgxp_cop0[32] = {};
-  PGXP_value pgxp_gte[64] = {};
+  PGXPValue pgxp_gpr[static_cast<u8>(Reg::count)] = {};
+  PGXPValue pgxp_cop0[32] = {};
+  PGXPValue pgxp_gte[64] = {};
 
   std::array<u32, ICACHE_LINES> icache_tags = {};
   std::array<u8, ICACHE_SIZE> icache_data = {};
@@ -137,22 +132,22 @@ void Shutdown();
 void Reset();
 bool DoState(StateWrapper& sw);
 void ClearICache();
+CPUExecutionMode GetCurrentExecutionMode();
 bool UpdateDebugDispatcherFlag();
 void UpdateMemoryPointers();
-void ExecutionModeChanged();
 
 /// Executes interpreter loop.
 void Execute();
 
 // Forces an early exit from the CPU dispatcher.
-void ExitExecution();
+[[noreturn]] void ExitExecution();
 
 ALWAYS_INLINE static Registers& GetRegs()
 {
   return g_state.regs;
 }
 
-ALWAYS_INLINE static TickCount GetPendingTicks()
+ALWAYS_INLINE static u32 GetPendingTicks()
 {
   return g_state.pending_ticks;
 }
@@ -164,7 +159,7 @@ ALWAYS_INLINE static void ResetPendingTicks()
 }
 ALWAYS_INLINE static void AddPendingTicks(TickCount ticks)
 {
-  g_state.pending_ticks += ticks;
+  g_state.pending_ticks += static_cast<u32>(ticks);
 }
 
 // state helpers
@@ -237,6 +232,7 @@ bool HasBreakpointAtAddress(BreakpointType type, VirtualMemoryAddress address);
 BreakpointList CopyBreakpointList(bool include_auto_clear = false, bool include_callbacks = false);
 bool AddBreakpoint(BreakpointType type, VirtualMemoryAddress address, bool auto_clear = false, bool enabled = true);
 bool AddBreakpointWithCallback(BreakpointType type, VirtualMemoryAddress address, BreakpointCallback callback);
+bool SetBreakpointEnabled(BreakpointType type, VirtualMemoryAddress address, bool enabled);
 bool RemoveBreakpoint(BreakpointType type, VirtualMemoryAddress address);
 void ClearBreakpoints();
 bool AddStepOverBreakpoint();

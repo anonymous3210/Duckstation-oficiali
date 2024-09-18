@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com> and contributors.
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "analog_joystick.h"
 #include "host.h"
@@ -14,8 +14,7 @@
 
 #include "IconsFontAwesome5.h"
 #include "IconsPromptFont.h"
-
-#include <cmath>
+#include "fmt/format.h"
 
 Log_SetChannel(AnalogJoystick);
 
@@ -415,9 +414,9 @@ const Controller::ControllerInfo AnalogJoystick::INFO = {ControllerType::AnalogJ
                                                          s_settings,
                                                          Controller::VibrationCapabilities::NoVibration};
 
-void AnalogJoystick::LoadSettings(SettingsInterface& si, const char* section)
+void AnalogJoystick::LoadSettings(SettingsInterface& si, const char* section, bool initial)
 {
-  Controller::LoadSettings(si, section);
+  Controller::LoadSettings(si, section, initial);
   m_analog_deadzone = std::clamp(si.GetFloatValue(section, "AnalogDeadzone", DEFAULT_STICK_DEADZONE), 0.0f, 1.0f);
   m_analog_sensitivity =
     std::clamp(si.GetFloatValue(section, "AnalogSensitivity", DEFAULT_STICK_SENSITIVITY), 0.01f, 3.0f);

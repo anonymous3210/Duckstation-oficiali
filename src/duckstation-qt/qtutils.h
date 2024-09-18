@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -114,5 +114,11 @@ qreal GetDevicePixelRatioForWidget(const QWidget* widget);
 
 /// Returns the common window info structure for a Qt widget.
 std::optional<WindowInfo> GetWindowInfoForWidget(QWidget* widget);
+
+/// Saves a window's geometry to configuration. Returns false if the configuration was changed.
+bool SaveWindowGeometry(std::string_view window_name, QWidget* widget, bool auto_commit_changes = true);
+
+/// Restores a window's geometry from configuration. Returns false if it was not found in the configuration.
+bool RestoreWindowGeometry(std::string_view window_name, QWidget* widget);
 
 } // namespace QtUtils

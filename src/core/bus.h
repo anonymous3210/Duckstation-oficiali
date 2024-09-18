@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -67,7 +67,10 @@ enum : u32
   MDEC_MASK = MDEC_SIZE - 1,
   SPU_BASE = 0x1F801C00,
   SPU_SIZE = 0x400,
-  SPU_MASK = 0x3FF,
+  SPU_MASK = SPU_SIZE - 1,
+  SIO2_BASE = 0x1F808000,
+  SIO2_SIZE = 0x1000,
+  SIO2_MASK = SIO2_SIZE - 1,
   EXP2_BASE = 0x1F802000,
   EXP2_SIZE = 0x2000,
   EXP2_MASK = EXP2_SIZE - 1,
@@ -113,10 +116,18 @@ enum : u32
 static constexpr size_t FASTMEM_ARENA_SIZE = UINT64_C(0x100000000);
 #endif
 
-bool AllocateMemory(Error* error);
+bool AllocateMemory(bool export_shared_memory, Error* error);
 void ReleaseMemory();
 
-bool Initialize();
+/// Frees and re-allocates the memory map for the process.
+/// This should be called when shared memory exports are enabled.
+bool ReallocateMemoryMap(bool export_shared_memory, Error* error);
+
+/// Cleans up/deletes the shared memory object for this process.
+/// Should be called when the process crashes, to avoid leaking.
+void CleanupMemoryMap();
+
+void Initialize();
 void Shutdown();
 void Reset();
 bool DoState(StateWrapper& sw);
@@ -133,9 +144,8 @@ ALWAYS_INLINE_RELEASE static FP* OffsetHandlerArray(void** handlers, MemoryAcces
                                (((static_cast<size_t>(size) * 2) + static_cast<size_t>(type)) * MEMORY_LUT_SIZE));
 }
 
-CPUFastmemMode GetFastmemMode();
 void* GetFastmemBase(bool isc);
-void UpdateFastmemViews(CPUFastmemMode mode);
+void RemapFastmemViews();
 bool CanUseFastmemForAddress(VirtualMemoryAddress address);
 
 void SetExpansionROM(std::vector<u8> data);
@@ -211,6 +221,7 @@ enum class MemoryRegion
 std::optional<MemoryRegion> GetMemoryRegionForAddress(PhysicalMemoryAddress address);
 PhysicalMemoryAddress GetMemoryRegionStart(MemoryRegion region);
 PhysicalMemoryAddress GetMemoryRegionEnd(MemoryRegion region);
+bool IsMemoryRegionWritable(MemoryRegion region);
 u8* GetMemoryRegionPointer(MemoryRegion region);
 std::optional<PhysicalMemoryAddress> SearchMemory(PhysicalMemoryAddress start_address, const u8* pattern,
                                                   const u8* mask, u32 pattern_length);

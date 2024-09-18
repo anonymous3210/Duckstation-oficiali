@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 #include "common/types.h"
@@ -21,6 +21,7 @@ enum class MemoryAccessSize : u32
 };
 
 using TickCount = s32;
+using GlobalTicks = u64;
 
 enum class ConsoleRegion
 {
@@ -83,6 +84,7 @@ enum class DisplayDeinterlacingMode : u8
   Weave,
   Blend,
   Adaptive,
+  Progressive,
   Count
 };
 
@@ -235,7 +237,7 @@ enum : u32
   NUM_MULTITAPS = 2
 };
 
-enum class CPUFastmemMode
+enum class CPUFastmemMode : u8
 {
   Disabled,
   MMap,
@@ -259,5 +261,27 @@ enum class CDROMMechaconVersion : u8
   VC3B,
   VC3C,
 
+  Count,
+};
+
+enum class SaveStateCompressionMode : u8
+{
+  Uncompressed,
+  DeflateLow,
+  DeflateDefault,
+  DeflateHigh,
+  ZstLow,
+  ZstDefault,
+  ZstHigh,
+
+  Count,
+};
+
+enum class ForceVideoTimingMode : u8
+{
+  Disabled,
+  NTSC,
+  PAL,
+  
   Count,
 };

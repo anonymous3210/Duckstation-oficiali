@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -25,8 +25,10 @@ struct DXGI_MODE_DESC;
 
 namespace D3DCommon {
 // returns string representation of feature level
-const char* GetFeatureLevelString(D3D_FEATURE_LEVEL feature_level);
-const char* GetFeatureLevelShaderModelString(D3D_FEATURE_LEVEL feature_level);
+const char* GetFeatureLevelString(u32 render_api_version);
+u32 GetRenderAPIVersionForFeatureLevel(D3D_FEATURE_LEVEL feature_level);
+D3D_FEATURE_LEVEL GetFeatureLevelForNumber(u32 render_api_version);
+u32 GetShaderModelForFeatureLevelNumber(u32 render_api_version);
 
 // returns max feature level of a device
 D3D_FEATURE_LEVEL GetDeviceMaxFeatureLevel(IDXGIAdapter1* adapter);
@@ -56,8 +58,6 @@ std::string GetAdapterName(IDXGIAdapter1* adapter);
 
 // returns the driver version from the registry as a string
 std::string GetDriverVersionFromLUID(const LUID& luid);
-
-u32 GetShaderModelForFeatureLevel(D3D_FEATURE_LEVEL feature_level);
 
 std::optional<DynamicHeapArray<u8>> CompileShader(u32 shader_model, bool debug_device, GPUShaderStage stage,
                                                   std::string_view source, const char* entry_point, Error* error);

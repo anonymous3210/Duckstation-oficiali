@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -17,7 +17,6 @@ const std::string& GetGameIconPath();
 
 std::string GetAchievementBadgePath(const rc_client_achievement_t* achievement, int state,
                                     bool download_if_missing = true);
-std::string GetUserBadgePath(std::string_view username);
 std::string GetLeaderboardUserBadgePath(const rc_client_leaderboard_entry_t* entry);
 
 void OpenLeaderboard(const rc_client_leaderboard_t* lboard);

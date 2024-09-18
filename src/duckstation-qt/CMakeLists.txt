@@ -130,6 +130,7 @@ set(SRCS
   qtkeycodes.cpp
   qtprogresscallback.cpp
   qtprogresscallback.h
+  qtthemes.cpp
   qttranslations.cpp
   qtutils.cpp
   qtutils.h
@@ -207,8 +208,9 @@ if(WIN32)
   )
   #set_source_files_properties(${TS_FILES} PROPERTIES OUTPUT_LOCATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translations")
 
-  set(DEPS_TO_COPY cpuinfo.dll discord-rpc.dll freetype.dll harfbuzz.dll libjpeg.dll libpng16.dll libsharpyuv.dll libwebp.dll
-                   SDL2.dll shaderc_shared.dll soundtouch.dll spirv-cross-c-shared.dll zlib1.dll zstd.dll)
+  set(DEPS_TO_COPY cpuinfo.dll discord-rpc.dll dxcompiler.dll dxil.dll freetype.dll harfbuzz.dll jpeg62.dll libpng16.dll
+                   libsharpyuv.dll libwebp.dll lunasvg.dll SDL2.dll shaderc_shared.dll soundtouch.dll spirv-cross-c-shared.dll
+                   zlib1.dll zstd.dll)
   foreach(DEP ${DEPS_TO_COPY})
     list(APPEND DEP_BINS "${CMAKE_PREFIX_PATH}/bin/${DEP}")
   endforeach()
@@ -225,8 +227,9 @@ if(WIN32)
 elseif(APPLE)
   # Don't generate a bundle for XCode, it makes code signing fail...
   if(NOT CMAKE_GENERATOR MATCHES "Xcode")
+    get_scm_version()
     set(BUNDLE_PATH ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/DuckStation.app)
-      set_target_properties(duckstation-qt PROPERTIES
+    set_target_properties(duckstation-qt PROPERTIES
       MACOSX_BUNDLE true
       MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in
       OUTPUT_NAME DuckStation
@@ -245,6 +248,11 @@ elseif(APPLE)
   # Copy icon into the bundle
   target_sources(duckstation-qt PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/DuckStation.icns")
   set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/DuckStation.icns" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+endif()
+
+if(ALLOW_INSTALL)
+  # Install main binary.
+  install(TARGETS duckstation-qt RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}")
 endif()
 
 # Compile qrc to a binary file.
@@ -269,6 +277,9 @@ if(NOT APPLE)
   foreach (QM_FILE IN LISTS QM_FILES)
     get_filename_component(QM_FILE_NAME ${QM_FILE} NAME)
     add_custom_command(TARGET duckstation-qt POST_BUILD COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${QM_FILE}" "${QM_OUTPUT_DIR}/${QM_FILE_NAME}")
+    if(ALLOW_INSTALL)
+      install(FILES "${QM_FILE}" DESTINATION "${CMAKE_INSTALL_PREFIX}/translations")
+    endif()
   endforeach()
 else()
   foreach (QM_FILE IN LISTS QM_FILES)

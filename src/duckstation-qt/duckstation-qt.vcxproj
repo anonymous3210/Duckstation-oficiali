@@ -43,6 +43,7 @@
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="postprocessingsettingswidget.cpp" />
+    <ClCompile Include="qtthemes.cpp" />
     <ClCompile Include="qttranslations.cpp" />
     <ClCompile Include="qthost.cpp" />
     <ClCompile Include="qtkeycodes.cpp" />
@@ -397,6 +398,10 @@
       <PreprocessorDefinitions>QT_NO_EXCEPTIONS=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <DisableSpecificWarnings>4127;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)dep\minizip\include</AdditionalIncludeDirectories>
+
+      <!-- Qt relies on RTTI for assertions in Debug builds. -->
+      <RuntimeTypeInfo Condition="$(Configuration.Contains(Debug))">true</RuntimeTypeInfo>
+      <AdditionalOptions Condition="$(Configuration.Contains(Clang)) And $(Configuration.Contains(Debug))">%(AdditionalOptions) /clang:-frtti</AdditionalOptions>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="$(Configuration.Contains(Clang))">

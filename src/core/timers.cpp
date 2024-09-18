@@ -1,9 +1,8 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "timers.h"
 #include "gpu.h"
-#include "host.h"
 #include "interrupt_controller.h"
 #include "system.h"
 
@@ -515,7 +514,7 @@ void Timers::DrawDebugStateWindow()
      {{"SysClk", "HBlank", "SysClk", "HBlank"}},
      {{"SysClk", "DotClk", "SysClk/8", "SysClk/8"}}}};
 
-  const float framebuffer_scale = Host::GetOSDScale();
+  const float framebuffer_scale = ImGuiManager::GetGlobalScale();
 
   ImGui::SetNextWindowSize(ImVec2(800.0f * framebuffer_scale, 115.0f * framebuffer_scale), ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("Timer State", nullptr))

@@ -1,12 +1,11 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "psf_loader.h"
 #include "bios.h"
 #include "bus.h"
 #include "system.h"
 
-#include "common/assert.h"
 #include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
@@ -14,7 +13,6 @@
 
 #include "zlib.h"
 
-#include <cctype>
 #include <cstring>
 
 Log_SetChannel(PSFLoader);
@@ -71,7 +69,7 @@ float PSFLoader::File::GetTagFloat(const char* tag_name, float default_value) co
 
 bool PSFLoader::File::Load(const char* path, Error* error)
 {
-  std::optional<std::vector<u8>> file_data(FileSystem::ReadBinaryFile(path, error));
+  std::optional<DynamicHeapArray<u8>> file_data(FileSystem::ReadBinaryFile(path, error));
   if (!file_data.has_value() || file_data->empty())
     return false;
 

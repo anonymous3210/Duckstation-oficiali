@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 #include "core/types.h"
@@ -34,11 +34,12 @@ enum class Trait : u32
   ForceRoundUpscaledTextureCoordinates,
   ForceAccurateBlending,
   ForceInterlacing,
+  DisableAutoAnalogMode,
   DisableTrueColor,
   DisableUpscaling,
   DisableTextureFiltering,
+  DisableSpriteTextureFiltering,
   DisableScaledDithering,
-  DisableForceNTSCTimings,
   DisableWidescreen,
   DisablePGXP,
   DisablePGXPCulling,
@@ -80,6 +81,7 @@ struct Entry
   std::optional<s16> display_active_end_offset;
   std::optional<s8> display_line_start_offset;
   std::optional<s8> display_line_end_offset;
+  std::optional<DisplayCropMode> display_crop_mode;
   std::optional<DisplayDeinterlacingMode> display_deinterlacing_mode;
   std::optional<GPULineDetectMode> gpu_line_detect_mode;
   std::optional<u32> dma_max_slice_ticks;

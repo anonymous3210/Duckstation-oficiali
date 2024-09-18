@@ -1,12 +1,11 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "mdec.h"
 #include "cpu_core.h"
 #include "dma.h"
-#include "host.h"
-#include "interrupt_controller.h"
 #include "system.h"
+#include "timing_event.h"
 
 #include "util/imgui_manager.h"
 #include "util/state_wrapper.h"
@@ -142,7 +141,7 @@ struct MDECState
   std::array<u8, 64> iq_uv{};
   std::array<u8, 64> iq_y{};
 
-  std::array<s16, 64> scale_table{};
+  alignas(VECTOR_ALIGNMENT) std::array<s16, 64> scale_table{};
 
   // blocks, for colour: 0 - Crblk, 1 - Cbblk, 2-5 - Y 1-4
   alignas(VECTOR_ALIGNMENT) std::array<std::array<s16, 64>, NUM_BLOCKS> blocks;
@@ -150,7 +149,7 @@ struct MDECState
   u32 current_coefficient = 64; // k (in block)
   u16 current_q_scale = 0;
 
-  alignas(16) std::array<u32, 256> block_rgb{};
+  alignas(VECTOR_ALIGNMENT) std::array<u32, 256> block_rgb{};
   TimingEvent block_copy_out_event{"MDEC Block Copy Out", 1, 1, &MDEC::CopyOutBlock, nullptr};
 
   u32 total_blocks_decoded = 0;
@@ -625,6 +624,7 @@ void MDEC::CopyOutBlock(void* param, TickCount ticks, TickCount ticks_late)
 
   switch (s_state.status.data_output_depth)
   {
+    // Not worth vectorizing these, they're basically never used.
     case DataOutputDepth_4Bit:
     {
       const u32* in_ptr = s_state.block_rgb.data();
@@ -659,6 +659,7 @@ void MDEC::CopyOutBlock(void* param, TickCount ticks, TickCount ticks_late)
 
     case DataOutputDepth_24Bit:
     {
+#ifndef CPU_ARCH_SIMD
       // pack tightly
       u32 index = 0;
       u32 state = 0;
@@ -693,6 +694,36 @@ void MDEC::CopyOutBlock(void* param, TickCount ticks, TickCount ticks_late)
             break;
         }
       }
+#else
+      static constexpr GSVector4i mask00 = GSVector4i::cxpr8(0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1);
+      static constexpr GSVector4i mask01 =
+        GSVector4i::cxpr8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2, 4);
+      static constexpr GSVector4i mask11 =
+        GSVector4i::cxpr8(5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1, -1, -1, -1, -1);
+      static constexpr GSVector4i mask12 = GSVector4i::cxpr8(-1, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2, 4, 5, 6, 8, 9);
+      static constexpr GSVector4i mask22 =
+        GSVector4i::cxpr8(10, 12, 13, 14, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+      static constexpr GSVector4i mask23 = GSVector4i::cxpr8(-1, -1, -1, -1, 0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14);
+
+      // This is really awful, but the FIFO sucks...
+      alignas(VECTOR_ALIGNMENT) u32 rgb[256 * 3 / 4];
+      u32* rgbp = rgb;
+
+      for (u32 index = 0; index < s_state.block_rgb.size(); index += 16)
+      {
+        const GSVector4i rgbx0 = GSVector4i::load<false>(&s_state.block_rgb[index]);
+        const GSVector4i rgbx1 = GSVector4i::load<false>(&s_state.block_rgb[index + 4]);
+        const GSVector4i rgbx2 = GSVector4i::load<false>(&s_state.block_rgb[index + 8]);
+        const GSVector4i rgbx3 = GSVector4i::load<false>(&s_state.block_rgb[index + 12]);
+
+        GSVector4i::store<true>(&rgbp[0], rgbx0.shuffle8(mask00) | rgbx1.shuffle8(mask01));
+        GSVector4i::store<true>(&rgbp[4], rgbx1.shuffle8(mask11) | rgbx2.shuffle8(mask12));
+        GSVector4i::store<true>(&rgbp[8], rgbx2.shuffle8(mask22) | rgbx3.shuffle8(mask23));
+        rgbp += 12;
+      }
+
+      s_state.data_out_fifo.PushRange(rgb, std::size(rgb));
+#endif
       break;
     }
 
@@ -720,6 +751,7 @@ void MDEC::CopyOutBlock(void* param, TickCount ticks, TickCount ticks_late)
       }
       else
       {
+#ifndef CPU_ARCH_SIMD
         const u32 a = ZeroExtend32(s_state.status.data_output_bit15.GetValue()) << 15;
         for (u32 i = 0; i < static_cast<u32>(s_state.block_rgb.size());)
         {
@@ -739,6 +771,43 @@ void MDEC::CopyOutBlock(void* param, TickCount ticks, TickCount ticks_late)
 
           s_state.data_out_fifo.Push(color15a | (color15b << 16));
         }
+#else
+        // This is really awful, but the FIFO sucks...
+        alignas(VECTOR_ALIGNMENT) u32 rgb[256 / 2];
+        u32* rgbp = rgb;
+
+        const GSVector4i a = s_state.status.data_output_bit15 ? GSVector4i::cxpr(0x8000u) : GSVector4i::cxpr(0);
+        for (u32 i = 0; i < static_cast<u32>(s_state.block_rgb.size()); i += 8)
+        {
+          GSVector4i rgb0 = GSVector4i::load<true>(&s_state.block_rgb[i]);
+          GSVector4i rgb1 = GSVector4i::load<true>(&s_state.block_rgb[i + 4]);
+
+          static constexpr auto rgb32_to_rgba5551 = [](const GSVector4i& rgb32, const GSVector4i& a) {
+            const GSVector4i r =
+              (rgb32 & GSVector4i::cxpr(0xff)).add32(GSVector4i::cxpr(4)).srl32(3).min_u32(GSVector4i::cxpr(0x1F));
+            const GSVector4i g = (rgb32.srl32<8>() & GSVector4i::cxpr(0xff))
+                                   .add32(GSVector4i::cxpr(4))
+                                   .srl32(3)
+                                   .min_u32(GSVector4i::cxpr(0x1F))
+                                   .sll32<5>();
+            const GSVector4i b = (rgb32.srl32<16>() & GSVector4i::cxpr(0xff))
+                                   .add32(GSVector4i::cxpr(4))
+                                   .srl32(3)
+                                   .min_u32(GSVector4i::cxpr(0x1F))
+                                   .sll32<10>();
+            return (r | g | b | a);
+          };
+
+          rgb0 = rgb32_to_rgba5551(rgb0, a);
+          rgb1 = rgb32_to_rgba5551(rgb1, a);
+
+          const GSVector4i packed_rgb0_rb1 = rgb0.pu32(rgb1);
+          GSVector4i::store<true>(rgbp, packed_rgb0_rb1);
+          rgbp += sizeof(GSVector4i) / sizeof(u32);
+        }
+
+        s_state.data_out_fifo.PushRange(rgb, std::size(rgb));
+#endif
       }
     }
     break;
@@ -950,7 +1019,7 @@ bool MDEC::DecodeRLE_New(s16* blk, const u8* qt)
 static s16 IDCTRow(const s16* blk, const s16* idct_matrix)
 {
   // IDCT matrix is -32768..32767, block is -16384..16383. 4 adds can happen without overflow.
-  GSVector4i sum = GSVector4i::load<false>(blk).madd_s16(GSVector4i::load<false>(idct_matrix)).addp_s32();
+  GSVector4i sum = GSVector4i::load<false>(blk).madd_s16(GSVector4i::load<true>(idct_matrix)).addp_s32();
   return static_cast<s16>(((static_cast<s64>(sum.extract32<0>()) + static_cast<s64>(sum.extract32<1>())) + 0x20000) >>
                           18);
 }
@@ -979,8 +1048,8 @@ void MDEC::YUVToRGB_New(u32 xx, u32 yy, const std::array<s16, 64>& Crblk, const 
   const GSVector4i addval = s_state.status.data_output_signed ? GSVector4i::cxpr(0) : GSVector4i::cxpr(0x80808080);
   for (u32 y = 0; y < 8; y++)
   {
-    const GSVector4i Cr = GSVector4i::loadl(&Crblk[(xx / 2) + ((y + yy) / 2) * 8]).i16to32();
-    const GSVector4i Cb = GSVector4i::loadl(&Cbblk[(xx / 2) + ((y + yy) / 2) * 8]).i16to32();
+    const GSVector4i Cr = GSVector4i::loadl(&Crblk[(xx / 2) + ((y + yy) / 2) * 8]).s16to32();
+    const GSVector4i Cb = GSVector4i::loadl(&Cbblk[(xx / 2) + ((y + yy) / 2) * 8]).s16to32();
     const GSVector4i Y = GSVector4i::load<true>(&Yblk[y * 8]);
 
     // BT.601 YUV->RGB coefficients, rounding formula from Mednafen.
@@ -1058,7 +1127,7 @@ void MDEC::SetScaleMatrix(const u16* values)
 
 void MDEC::DrawDebugStateWindow()
 {
-  const float framebuffer_scale = Host::GetOSDScale();
+  const float framebuffer_scale = ImGuiManager::GetGlobalScale();
 
   ImGui::SetNextWindowSize(ImVec2(300.0f * framebuffer_scale, 350.0f * framebuffer_scale), ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("MDEC State", nullptr))

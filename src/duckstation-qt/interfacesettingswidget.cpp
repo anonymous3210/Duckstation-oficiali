@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "interfacesettingswidget.h"
 #include "autoupdaterdialog.h"
@@ -76,6 +76,15 @@ InterfaceSettingsWidget::InterfaceSettingsWidget(SettingsWindow* dialog, QWidget
   connect(m_ui.renderToSeparateWindow, &QCheckBox::checkStateChanged, this,
           &InterfaceSettingsWidget::onRenderToSeparateWindowChanged);
 
+  SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.theme, "UI", "Theme", THEME_NAMES, THEME_VALUES,
+                                               QtHost::GetDefaultThemeName(), "MainWindow");
+  connect(m_ui.theme, QOverload<int>::of(&QComboBox::currentIndexChanged), [this]() { emit themeChanged(); });
+
+  populateLanguageDropdown(m_ui.language);
+  SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.language, "Main", "Language", QtHost::GetDefaultLanguage());
+  connect(m_ui.language, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          &InterfaceSettingsWidget::onLanguageChanged);
+
   onRenderToSeparateWindowChanged();
 
   dialog->registerWidgetHelp(
@@ -110,30 +119,56 @@ InterfaceSettingsWidget::InterfaceSettingsWidget(SettingsWindow* dialog, QWidget
   dialog->registerWidgetHelp(m_ui.enableDiscordPresence, tr("Enable Discord Presence"), tr("Unchecked"),
                              tr("Shows the game you are currently playing as part of your profile in Discord."));
 
+  dialog->registerWidgetHelp(m_ui.autoUpdateEnabled, tr("Enable Automatic Update Check"), tr("Checked"),
+                             tr("Automatically checks for updates to the program on startup. Updates can be deferred "
+                                "until later or skipped entirely."));
+
+  m_ui.autoUpdateCurrentVersion->setText(tr("%1 (%2)").arg(g_scm_tag_str).arg(g_scm_date_str));
+
   if (!m_dialog->isPerGameSettings() && AutoUpdaterDialog::isSupported())
   {
     SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.autoUpdateEnabled, "AutoUpdater", "CheckAtStartup", true);
-    dialog->registerWidgetHelp(m_ui.autoUpdateEnabled, tr("Enable Automatic Update Check"), tr("Checked"),
-                               tr("Automatically checks for updates to the program on startup. Updates can be deferred "
-                                  "until later or skipped entirely."));
-
     m_ui.autoUpdateTag->addItems(AutoUpdaterDialog::getTagList());
     SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.autoUpdateTag, "AutoUpdater", "UpdateTag",
                                                    AutoUpdaterDialog::getDefaultTag());
-
-    m_ui.autoUpdateCurrentVersion->setText(tr("%1 (%2)").arg(g_scm_tag_str).arg(g_scm_date_str));
-    connect(m_ui.checkForUpdates, &QPushButton::clicked, []() { g_main_window->checkForUpdates(true); });
+    connect(m_ui.checkForUpdates, &QPushButton::clicked, this, []() { g_main_window->checkForUpdates(true); });
   }
   else
   {
-    m_ui.verticalLayout->removeWidget(m_ui.automaticUpdaterGroup);
-    m_ui.automaticUpdaterGroup->hide();
+    m_ui.autoUpdateTag->addItem(tr("Unavailable"));
+    m_ui.autoUpdateEnabled->setEnabled(false);
+    m_ui.autoUpdateTag->setEnabled(false);
+    m_ui.checkForUpdates->setEnabled(false);
+    m_ui.updatesGroup->setEnabled(false);
   }
 }
 
 InterfaceSettingsWidget::~InterfaceSettingsWidget() = default;
 
+void InterfaceSettingsWidget::populateLanguageDropdown(QComboBox* cb)
+{
+  for (const auto& [language, code] : Host::GetAvailableLanguageList())
+  {
+    QString icon_filename(QStringLiteral(":/icons/flags/%1.png").arg(QLatin1StringView(code)));
+    if (!QFile::exists(icon_filename))
+    {
+      // try without the suffix (e.g. es-es -> es)
+      const char* pos = std::strrchr(code, '-');
+      if (pos)
+        icon_filename = QStringLiteral(":/icons/flags/%1.png").arg(QLatin1StringView(pos));
+    }
+
+    cb->addItem(QIcon(icon_filename), QString::fromUtf8(language), QString::fromLatin1(code));
+  }
+}
+
 void InterfaceSettingsWidget::onRenderToSeparateWindowChanged()
 {
   m_ui.hideMainWindow->setEnabled(m_ui.renderToSeparateWindow->isChecked());
+}
+
+void InterfaceSettingsWidget::onLanguageChanged()
+{
+  QtHost::UpdateApplicationLanguage(QtUtils::GetRootWidget(this));
+  g_main_window->recreate();
 }

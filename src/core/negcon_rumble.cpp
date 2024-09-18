@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com> and contributors.
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "negcon_rumble.h"
 #include "IconsFontAwesome5.h"
@@ -19,6 +19,7 @@
 
 #include "IconsFontAwesome5.h"
 #include "IconsPromptFont.h"
+#include "fmt/format.h"
 
 #include <cmath>
 
@@ -68,7 +69,7 @@ void NeGconRumble::Reset()
 
   if (m_force_analog_on_reset)
   {
-    if (g_settings.controller_disable_analog_mode_forcing || System::IsRunningUnknownGame())
+    if (!CanStartInAnalogMode(ControllerType::AnalogController))
     {
       Host::AddIconOSDMessage(
         fmt::format("Controller{}AnalogMode", m_index), ICON_FA_GAMEPAD,
@@ -760,15 +761,15 @@ static const SettingInfo s_settings[] = {
 
 const Controller::ControllerInfo NeGconRumble::INFO = {ControllerType::NeGconRumble,
                                                        "NeGconRumble",
-                                                       TRANSLATE_NOOP("ControllerType", "NeGcon with Rumble"),
+                                                       TRANSLATE_NOOP("ControllerType", "NeGcon (Rumble)"),
                                                        ICON_PF_GAMEPAD,
                                                        s_binding_info,
                                                        s_settings,
                                                        Controller::VibrationCapabilities::LargeSmallMotors};
 
-void NeGconRumble::LoadSettings(SettingsInterface& si, const char* section)
+void NeGconRumble::LoadSettings(SettingsInterface& si, const char* section, bool initial)
 {
-  Controller::LoadSettings(si, section);
+  Controller::LoadSettings(si, section, initial);
   m_steering_deadzone = si.GetFloatValue(section, "SteeringDeadzone", 0.10f);
   m_steering_sensitivity = si.GetFloatValue(section, "SteeringSensitivity", 1.00f);
   m_rumble_bias = static_cast<u8>(std::min<u32>(si.GetIntValue(section, "VibrationBias", 8), 255));

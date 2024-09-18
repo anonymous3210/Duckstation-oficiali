@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -10,13 +10,8 @@
 #include "cpu_core_private.h"
 #include "cpu_types.h"
 
-#include "util/page_fault_handler.h"
-
 #include <array>
-#include <map>
-#include <memory>
 #include <unordered_map>
-#include <vector>
 
 namespace CPU::CodeCache {
 

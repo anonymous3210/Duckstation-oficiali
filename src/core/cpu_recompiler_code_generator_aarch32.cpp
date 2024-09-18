@@ -1,10 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
-
-#include "common/align.h"
-#include "common/assert.h"
-#include "common/log.h"
-#include "common/memmap.h"
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cpu_code_cache_private.h"
 #include "cpu_core.h"
@@ -13,6 +8,11 @@
 #include "cpu_recompiler_thunks.h"
 #include "settings.h"
 #include "timing_event.h"
+
+#include "common/align.h"
+#include "common/assert.h"
+#include "common/log.h"
+#include "common/memmap.h"
 
 #ifdef CPU_ARCH_ARM32
 
@@ -148,7 +148,7 @@ void CPU::Recompiler::armEmitFarLoad(vixl::aarch32::Assembler* armAsm, const vix
 }
 
 void CPU::Recompiler::armEmitFarStore(vixl::aarch32::Assembler* armAsm, const vixl::aarch32::Register& reg,
-                                      const void* addr, const vixl::aarch64::Register& tempreg)
+                                      const void* addr, const vixl::aarch32::Register& tempreg)
 {
   armMoveAddressToReg(armAsm, tempreg, addr);
   armAsm->str(reg, vixl::aarch32::MemOperand(tempreg));
@@ -1931,12 +1931,12 @@ void CodeGenerator::EmitICacheCheckAndUpdate()
   {
     if (m_block->HasFlag(CodeCache::BlockFlags::NeedsDynamicFetchTicks))
     {
-      armEmitFarLoad(m_emit, RARG2, GetFetchMemoryAccessTimePtr());
-      m_emit->ldr(RARG1, a32::MemOperand(GetCPUPtrReg(), OFFSETOF(State, pending_ticks)));
-      m_emit->Mov(RARG3, m_block->size);
-      m_emit->mul(RARG2, RARG2, RARG3);
-      m_emit->add(RARG1, RARG1, RARG2);
-      m_emit->str(RARG1, a32::MemOperand(GetCPUPtrReg(), OFFSETOF(State, pending_ticks)));
+      armEmitFarLoad(m_emit, GetHostReg32(RARG2), GetFetchMemoryAccessTimePtr());
+      m_emit->ldr(GetHostReg32(RARG1), a32::MemOperand(GetCPUPtrReg(), OFFSETOF(State, pending_ticks)));
+      m_emit->Mov(GetHostReg32(RARG3), m_block->size);
+      m_emit->mul(GetHostReg32(RARG2), GetHostReg32(RARG2), GetHostReg32(RARG3));
+      m_emit->add(GetHostReg32(RARG1), GetHostReg32(RARG1), GetHostReg32(RARG2));
+      m_emit->str(GetHostReg32(RARG1), a32::MemOperand(GetCPUPtrReg(), OFFSETOF(State, pending_ticks)));
     }
     else
     {

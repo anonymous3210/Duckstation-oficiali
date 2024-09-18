@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 #include "common/types.h"
@@ -27,6 +27,7 @@ public:
 private Q_SLOTS:
   void onCompatibilityCommentsClicked();
   void onInputProfileChanged(int index);
+  void onEditInputProfileClicked();
   void onComputeHashClicked();
 
 private:
@@ -36,6 +37,7 @@ private:
   void updateWindowTitle();
   void setCustomTitle(const std::string& text);
   void setCustomRegion(int region);
+  void setRevisionText(const QString& text);
 
   void populateTracksInfo();
 

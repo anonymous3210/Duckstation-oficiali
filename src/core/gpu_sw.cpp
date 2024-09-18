@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "gpu_sw.h"
 #include "system.h"
@@ -506,6 +506,7 @@ void GPU_SW::DispatchRenderCommand()
   {
     GPUBackendSetDrawingAreaCommand* cmd = m_backend.NewSetDrawingAreaCommand();
     cmd->new_area = m_drawing_area;
+    GSVector4i::store<false>(cmd->new_clamped_area, m_clamped_drawing_area);
     m_backend.PushCommand(cmd);
     m_drawing_area_changed = false;
   }

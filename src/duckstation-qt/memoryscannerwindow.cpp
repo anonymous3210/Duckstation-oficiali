@@ -1,16 +1,21 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com> and contributors.
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "memoryscannerwindow.h"
 #include "cheatcodeeditordialog.h"
-#include "common/assert.h"
-#include "common/string_util.h"
+#include "qthost.h"
+#include "qtutils.h"
+
 #include "core/bus.h"
 #include "core/cpu_core.h"
 #include "core/host.h"
 #include "core/system.h"
-#include "qthost.h"
-#include "qtutils.h"
+
+#include "common/assert.h"
+#include "common/string_util.h"
+
+#include "fmt/format.h"
+
 #include <QtCore/QFileInfo>
 #include <QtGui/QColor>
 #include <QtWidgets/QFileDialog>
@@ -89,9 +94,11 @@ static QString formatValue(u32 value, bool is_signed)
 MemoryScannerWindow::MemoryScannerWindow() : QWidget()
 {
   m_ui.setupUi(this);
+  QtUtils::RestoreWindowGeometry("MemoryScannerWindow", this);
   connectUi();
 
-  m_ui.cheatEngineAddress->setText(tr("Address of RAM for HxD Usage: 0x%1").arg(reinterpret_cast<qulonglong>(Bus::g_unprotected_ram), 16, 16, QChar('0')));
+  m_ui.cheatEngineAddress->setText(tr("Address of RAM for HxD Usage: 0x%1")
+                                     .arg(reinterpret_cast<qulonglong>(Bus::g_unprotected_ram), 16, 16, QChar('0')));
 }
 
 MemoryScannerWindow::~MemoryScannerWindow() = default;
@@ -211,6 +218,7 @@ void MemoryScannerWindow::showEvent(QShowEvent* event)
 
 void MemoryScannerWindow::closeEvent(QCloseEvent* event)
 {
+  QtUtils::SaveWindowGeometry("MemoryScannerWindow", this);
   QWidget::closeEvent(event);
   emit closed();
 }

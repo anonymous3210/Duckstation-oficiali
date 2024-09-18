@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -24,9 +24,9 @@ public:
 
   bool ResizeOutput(GPUTexture::Format format, u32 width, u32 height) override;
   bool CompilePipeline(GPUTexture::Format format, u32 width, u32 height, ProgressCallback* progress) override;
-  bool Apply(GPUTexture* input_color, GPUTexture* input_depth, GPUTexture* final_target, GSVector4i final_rect,
-             s32 orig_width, s32 orig_height, s32 native_width, s32 native_height, u32 target_width,
-             u32 target_height) override;
+  GPUDevice::PresentResult Apply(GPUTexture* input_color, GPUTexture* input_depth, GPUTexture* final_target,
+                                 GSVector4i final_rect, s32 orig_width, s32 orig_height, s32 native_width,
+                                 s32 native_height, u32 target_width, u32 target_height) override;
 
 private:
   struct CommonUniforms

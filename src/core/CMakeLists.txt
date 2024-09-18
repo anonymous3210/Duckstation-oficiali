@@ -57,6 +57,8 @@ add_library(core
   gpu_sw.h
   gpu_sw_backend.cpp
   gpu_sw_backend.h
+  gpu_sw_rasterizer.cpp
+  gpu_sw_rasterizer.h
   gpu_types.h
   guncon.cpp
   guncon.h
@@ -81,6 +83,7 @@ add_library(core
   memory_card.h
   memory_card_image.cpp
   memory_card_image.h
+  mips_encoder.h
   multitap.cpp
   multitap.h
   negcon.cpp
@@ -97,8 +100,6 @@ add_library(core
   playstation_mouse.h
   psf_loader.cpp
   psf_loader.h
-  resources.cpp
-  resources.h
   save_state_version.h
   settings.cpp
   settings.h
@@ -215,4 +216,8 @@ function(add_core_resources target)
     endif()
     add_resources(${target} ${path} ${CMAKE_SOURCE_DIR}/data/resources/)
   endforeach()
+  if(ALLOW_INSTALL)
+    install_imported_dep_library(cpuinfo::cpuinfo)
+    install(DIRECTORY "$<TARGET_FILE_DIR:${target}>/resources" DESTINATION "${CMAKE_INSTALL_PREFIX}")
+  endif()
 endfunction()

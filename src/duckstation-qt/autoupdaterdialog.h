@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -33,6 +33,7 @@ public:
   static QStringList getTagList();
   static std::string getDefaultTag();
   static void cleanupAfterUpdate();
+  static bool isOfficialBuild();
   static bool warnAboutUnofficialBuild();
 
 Q_SIGNALS:

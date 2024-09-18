@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
 #include "common/types.h"
+#include <span>
 #include <string>
 #include <vector>
 
@@ -15,17 +16,28 @@ union InputBindingKey;
 enum class GenericInputBinding : u8;
 
 namespace ImGuiManager {
+
+using WCharType = u32;
+
 /// Sets the path to the font to use. Empty string means to use the default.
-void SetFontPathAndRange(std::string path, std::vector<u16> range);
+void SetFontPathAndRange(std::string path, std::vector<WCharType> range);
+
+/// Sets the emoji font range to use. Empty means no glyphs will be rasterized.
+/// Should NOT be terminated with zeros, unlike the font range above.
+void SetEmojiFontRange(std::vector<WCharType> range);
+
+/// Returns a compacted font range, with adjacent glyphs merged into one pair.
+std::vector<WCharType> CompactFontRange(std::span<const WCharType> range);
 
 /// Changes the global scale.
 void SetGlobalScale(float global_scale);
 
 /// Changes whether OSD messages are silently dropped.
+bool IsShowingOSDMessages();
 void SetShowOSDMessages(bool enable);
 
 /// Initializes ImGui, creates fonts, etc.
-bool Initialize(float global_scale, bool show_osd_messages, Error* error);
+bool Initialize(float global_scale, Error* error);
 
 /// Frees all ImGui resources.
 void Shutdown();
@@ -35,7 +47,7 @@ float GetWindowWidth();
 float GetWindowHeight();
 
 /// Updates internal state when the window is size.
-void WindowResized();
+void WindowResized(float width, float height);
 
 /// Updates scaling of the on-screen elements.
 void RequestScaleUpdate();
@@ -57,6 +69,9 @@ bool AddFullscreenFontsIfMissing();
 
 /// Returns the standard font for external drawing.
 ImFont* GetStandardFont();
+
+/// Returns the standard font for on-screen display drawing.
+ImFont* GetOSDFont();
 
 /// Returns the fixed-width font for external drawing.
 ImFont* GetFixedFont();
@@ -119,13 +134,13 @@ static constexpr float OSD_WARNING_DURATION = 10.0f;
 static constexpr float OSD_INFO_DURATION = 5.0f;
 static constexpr float OSD_QUICK_DURATION = 2.5f;
 
-/// Returns the scale of OSD elements.
-float GetOSDScale();
-
 /// Adds OSD messages, duration is in seconds.
 void AddOSDMessage(std::string message, float duration = 2.0f);
 void AddKeyedOSDMessage(std::string key, std::string message, float duration = 2.0f);
 void AddIconOSDMessage(std::string key, const char* icon, std::string message, float duration = 2.0f);
+void AddKeyedOSDWarning(std::string key, std::string message, float duration = 2.0f);
+void AddIconOSDWarning(std::string key, const char* icon, std::string message, float duration = 2.0f);
 void RemoveKeyedOSDMessage(std::string key);
-void ClearOSDMessages();
+void RemoveKeyedOSDWarning(std::string key);
+void ClearOSDMessages(bool clear_warnings);
 } // namespace Host

@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -198,8 +198,6 @@ public:
   MetalDevice();
   ~MetalDevice();
 
-  RenderAPI GetRenderAPI() const override;
-
   bool HasSurface() const override;
 
   bool UpdateWindow() override;
@@ -265,8 +263,8 @@ public:
 
   void SetVSyncMode(GPUVSyncMode mode, bool allow_present_throttle) override;
 
-  bool BeginPresent(bool skip_present) override;
-  void EndPresent(bool explicit_submit) override;
+  PresentResult BeginPresent(u32 clear_color) override;
+  void EndPresent(bool explicit_submit, u64 present_time) override;
   void SubmitPresent() override;
 
   void WaitForFenceCounter(u64 counter);
@@ -287,10 +285,12 @@ public:
   static void DeferRelease(u64 fence_counter, id obj);
 
 protected:
-  bool CreateDevice(std::string_view adapter, bool threaded_presentation,
-                    std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features,
-                    Error* error) override;
+  bool CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
+                    FeatureMask disabled_features, Error* error) override;
   void DestroyDevice() override;
+  bool OpenPipelineCache(const std::string& path, Error* error) override;
+  bool CreatePipelineCache(const std::string& path, Error* error) override;
+  bool ClosePipelineCache(const std::string& path, Error* error) override;
 
 private:
   static constexpr u32 VERTEX_BUFFER_SIZE = 8 * 1024 * 1024;
@@ -320,14 +320,12 @@ private:
   void SetFeatures(FeatureMask disabled_features);
   bool LoadShaders();
 
+  std::unique_ptr<GPUShader> CreateShaderFromMSL(GPUShaderStage stage, std::string_view source,
+                                                 std::string_view entry_point, Error* error);
   id<MTLFunction> GetFunctionFromLibrary(id<MTLLibrary> library, NSString* name);
   id<MTLComputePipelineState> CreateComputePipeline(id<MTLFunction> function, NSString* name);
   ClearPipelineConfig GetCurrentClearPipelineConfig() const;
   id<MTLRenderPipelineState> GetClearDepthPipeline(const ClearPipelineConfig& config);
-
-  std::unique_ptr<GPUShader> CreateShaderFromMSL(GPUShaderStage stage, std::string_view source,
-                                                 std::string_view entry_point, Error* error);
-
   id<MTLDepthStencilState> GetDepthState(const GPUPipeline::DepthState& ds);
 
   void CreateCommandBuffer();
@@ -377,6 +375,7 @@ private:
   MetalStreamBuffer m_texture_upload_buffer;
 
   id<MTLLibrary> m_shaders = nil;
+  id<MTLBinaryArchive> m_pipeline_archive = nil;
   std::vector<std::pair<std::pair<GPUTexture::Format, GPUTexture::Format>, id<MTLComputePipelineState>>>
     m_resolve_pipelines;
   std::vector<std::pair<ClearPipelineConfig, id<MTLRenderPipelineState>>> m_clear_pipelines;
@@ -405,6 +404,7 @@ private:
   GSVector4i m_current_scissor = {};
 
   bool m_vsync_enabled = false;
+  bool m_pipeline_cache_modified = false;
 
   double m_accumulated_gpu_time = 0;
   double m_last_gpu_time_end = 0;

@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>.
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
 #include "types.h"
 
+#include "common/heap_array.h"
 #include "common/small_string.h"
 
 #include <array>
@@ -30,10 +31,20 @@ struct ImageInfo
   static constexpr u32 HASH_SIZE = 16;
   using Hash = std::array<u8, HASH_SIZE>;
 
+  enum class FastBootPatch : u8
+  {
+    Unsupported,
+    Type1,
+    Type2,
+  };
+
   const char* description;
   ConsoleRegion region;
   Hash hash;
-  bool patch_compatible;
+  FastBootPatch fastboot_patch;
+  u8 priority;
+
+  bool SupportsFastBoot() const { return (fastboot_patch != FastBootPatch::Unsupported); }
 
   static TinyString GetHashString(const Hash& hash);
 };
@@ -42,7 +53,7 @@ struct Image
 {
   const ImageInfo* info;
   ImageInfo::Hash hash;
-  std::vector<u8> data;
+  DynamicHeapArray<u8> data;
 };
 
 #pragma pack(push, 1)
@@ -70,7 +81,7 @@ std::optional<Image> LoadImageFromFile(const char* filename, Error* error);
 
 bool IsValidBIOSForRegion(ConsoleRegion console_region, ConsoleRegion bios_region);
 
-bool PatchBIOSFastBoot(u8* image, u32 image_size);
+bool PatchBIOSFastBoot(u8* image, u32 image_size, ImageInfo::FastBootPatch type);
 
 bool IsValidPSExeHeader(const PSEXEHeader& header, size_t file_size);
 DiscRegion GetPSExeDiscRegion(const PSEXEHeader& header);

@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "advancedsettingswidget.h"
 #include "core/gpu_types.h"
@@ -222,8 +222,11 @@ void AdvancedSettingsWidget::addTweakOptions()
                         "IncreaseTimerResolution", true);
   addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Load Devices From Save States"), "Main",
                         "LoadDevicesFromSaveStates", false);
-  addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Compress Save States"), "Main", "CompressSaveStates",
-                        Settings::DEFAULT_SAVE_STATE_COMPRESSION);
+  addChoiceTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Save State Compression"), "Main", "SaveStateCompression",
+                       &Settings::ParseSaveStateCompressionModeName, &Settings::GetSaveStateCompressionModeName,
+                       &Settings::GetSaveStateCompressionModeDisplayName,
+                       static_cast<u32>(SaveStateCompressionMode::Count),
+                       Settings::DEFAULT_SAVE_STATE_COMPRESSION_MODE);
 
   if (m_dialog->isPerGameSettings())
   {
@@ -263,6 +266,8 @@ void AdvancedSettingsWidget::addTweakOptions()
   addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Allow Booting Without SBI File"), "CDROM",
                         "AllowBootingWithoutSBIFile", false);
 
+  addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Export Shared Memory"), "Hacks", "ExportSharedMemory",
+                        false);
   addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Enable PINE"), "PINE", "Enabled", false);
   addIntRangeTweakOption(m_dialog, m_ui.tweakOptionTable, tr("PINE Slot"), "PINE", "Slot", 0, 65535,
                          Settings::DEFAULT_PINE_SLOT);
@@ -282,7 +287,8 @@ void AdvancedSettingsWidget::onResetToDefaultClicked()
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, true);  // Apply compatibility settings
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, true);  // Increase Timer Resolution
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, false); // Load Devices From Save States
-    setBooleanTweakOption(m_ui.tweakOptionTable, i++, Settings::DEFAULT_SAVE_STATE_COMPRESSION); // Compress Save States
+    setChoiceTweakOption(m_ui.tweakOptionTable, i++,
+                         Settings::DEFAULT_SAVE_STATE_COMPRESSION_MODE); // Save State Compression
     setIntRangeTweakOption(m_ui.tweakOptionTable, i++,
                            static_cast<int>(Settings::DEFAULT_DMA_MAX_SLICE_TICKS)); // DMA max slice ticks
     setIntRangeTweakOption(m_ui.tweakOptionTable, i++,
@@ -299,6 +305,7 @@ void AdvancedSettingsWidget::onResetToDefaultClicked()
                          Settings::DEFAULT_CDROM_MECHACON_VERSION);                  // CDROM Mechacon Version
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                        // CDROM Region Check
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                        // Allow booting without SBI file
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                        // Export Shared Memory
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                        // Enable PINE
     setIntRangeTweakOption(m_ui.tweakOptionTable, i++, Settings::DEFAULT_PINE_SLOT); // PINE Slot
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                        // Enable PCDRV
@@ -322,6 +329,7 @@ void AdvancedSettingsWidget::onResetToDefaultClicked()
   sif->DeleteValue("Hacks", "DMAHaltTicks");
   sif->DeleteValue("Hacks", "GPUFIFOSize");
   sif->DeleteValue("Hacks", "GPUMaxRunAhead");
+  sif->DeleteValue("Hacks", "ExportSharedMemory");
   sif->DeleteValue("CPU", "RecompilerMemoryExceptions");
   sif->DeleteValue("CPU", "RecompilerBlockLinking");
   sif->DeleteValue("CPU", "FastmemMode");

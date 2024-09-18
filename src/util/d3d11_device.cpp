@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "d3d11_device.h"
 #include "core/host.h" // TODO: Remove me
@@ -53,19 +53,13 @@ D3D11Device::~D3D11Device()
   Assert(!m_device);
 }
 
-RenderAPI D3D11Device::GetRenderAPI() const
-{
-  return RenderAPI::D3D11;
-}
-
 bool D3D11Device::HasSurface() const
 {
   return static_cast<bool>(m_swap_chain);
 }
 
-bool D3D11Device::CreateDevice(std::string_view adapter, bool threaded_presentation,
-                               std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features,
-                               Error* error)
+bool D3D11Device::CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
+                               FeatureMask disabled_features, Error* error)
 {
   std::unique_lock lock(s_instance_mutex);
 
@@ -128,7 +122,8 @@ bool D3D11Device::CreateDevice(std::string_view adapter, bool threaded_presentat
     INFO_LOG("D3D Adapter: {}", D3DCommon::GetAdapterName(dxgi_adapter.Get()));
   else
     ERROR_LOG("Failed to obtain D3D adapter name.");
-  INFO_LOG("Max device feature level: {}", D3DCommon::GetFeatureLevelString(m_max_feature_level));
+  INFO_LOG("Max device feature level: {}",
+           D3DCommon::GetFeatureLevelString(D3DCommon::GetRenderAPIVersionForFeatureLevel(m_max_feature_level)));
 
   BOOL allow_tearing_supported = false;
   hr = m_dxgi_factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow_tearing_supported,
@@ -165,6 +160,8 @@ void D3D11Device::SetFeatures(FeatureMask disabled_features)
 {
   const D3D_FEATURE_LEVEL feature_level = m_device->GetFeatureLevel();
 
+  m_render_api = RenderAPI::D3D11;
+  m_render_api_version = D3DCommon::GetRenderAPIVersionForFeatureLevel(feature_level);
   m_max_texture_size = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
   m_max_multisamples = 1;
   for (u32 multisamples = 2; multisamples < D3D11_MAX_MULTISAMPLE_SAMPLE_COUNT; multisamples++)
@@ -190,6 +187,7 @@ void D3D11Device::SetFeatures(FeatureMask disabled_features)
   m_features.partial_msaa_resolve = false;
   m_features.memory_import = false;
   m_features.explicit_present = false;
+  m_features.timed_present = false;
   m_features.gpu_timing = true;
   m_features.shader_cache = true;
   m_features.pipeline_cache = false;
@@ -444,12 +442,11 @@ bool D3D11Device::SupportsExclusiveFullscreen() const
 
 std::string D3D11Device::GetDriverInfo() const
 {
-  const D3D_FEATURE_LEVEL fl = m_device->GetFeatureLevel();
-  std::string ret =
-    fmt::format("{} ({})\n", D3DCommon::GetFeatureLevelString(fl), D3DCommon::GetFeatureLevelShaderModelString(fl));
+  std::string ret = fmt::format("{} (Shader Model {})\n", D3DCommon::GetFeatureLevelString(m_render_api_version),
+                                D3DCommon::GetShaderModelForFeatureLevelNumber(m_render_api_version));
 
   ComPtr<IDXGIDevice> dxgi_dev;
-  if (m_device.As(&dxgi_dev))
+  if (SUCCEEDED(m_device.As(&dxgi_dev)))
   {
     ComPtr<IDXGIAdapter> dxgi_adapter;
     if (SUCCEEDED(dxgi_dev->GetAdapter(dxgi_adapter.GetAddressOf())))
@@ -640,17 +637,14 @@ void D3D11Device::SetVSyncMode(GPUVSyncMode mode, bool allow_present_throttle)
   }
 }
 
-bool D3D11Device::BeginPresent(bool skip_present)
+GPUDevice::PresentResult D3D11Device::BeginPresent(u32 clear_color)
 {
-  if (skip_present)
-    return false;
-
   if (!m_swap_chain)
   {
     // Note: Really slow on Intel...
     m_context->Flush();
     TrimTexturePool();
-    return false;
+    return PresentResult::SkipPresent;
   }
 
   // Check if we lost exclusive fullscreen. If so, notify the host, so it can switch to windowed mode.
@@ -661,7 +655,7 @@ bool D3D11Device::BeginPresent(bool skip_present)
   {
     Host::SetFullscreen(false);
     TrimTexturePool();
-    return false;
+    return PresentResult::SkipPresent;
   }
 
   // When using vsync, the time here seems to include the time for the buffer to become available.
@@ -671,20 +665,19 @@ bool D3D11Device::BeginPresent(bool skip_present)
   if (m_vsync_mode == GPUVSyncMode::FIFO && m_gpu_timing_enabled)
     PopTimestampQuery();
 
-  static constexpr float clear_color[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-  m_context->ClearRenderTargetView(m_swap_chain_rtv.Get(), clear_color);
+  m_context->ClearRenderTargetView(m_swap_chain_rtv.Get(), GSVector4::rgba32(clear_color).F32);
   m_context->OMSetRenderTargets(1, m_swap_chain_rtv.GetAddressOf(), nullptr);
   s_stats.num_render_passes++;
   m_num_current_render_targets = 0;
   m_current_render_pass_flags = GPUPipeline::NoRenderPassFlags;
   std::memset(m_current_render_targets.data(), 0, sizeof(m_current_render_targets));
   m_current_depth_target = nullptr;
-  return true;
+  return PresentResult::OK;
 }
 
-void D3D11Device::EndPresent(bool explicit_present)
+void D3D11Device::EndPresent(bool explicit_present, u64 present_time)
 {
-  DebugAssert(!explicit_present);
+  DebugAssert(!explicit_present && present_time == 0);
   DebugAssert(m_num_current_render_targets == 0 && !m_current_depth_target);
 
   if (m_vsync_mode != GPUVSyncMode::FIFO && m_gpu_timing_enabled)

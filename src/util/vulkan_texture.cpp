@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "vulkan_texture.h"
 #include "vulkan_builders.h"
@@ -1158,9 +1158,15 @@ void VulkanDownloadTexture::Flush()
 
   // Need to execute command buffer.
   if (dev.GetCurrentFenceCounter() == m_copy_fence_counter)
+  {
+    if (dev.InRenderPass())
+      dev.EndRenderPass();
     dev.SubmitCommandBuffer(true);
+  }
   else
+  {
     dev.WaitForFenceCounter(m_copy_fence_counter);
+  }
 }
 
 void VulkanDownloadTexture::SetDebugName(std::string_view name)

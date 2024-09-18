@@ -1,12 +1,15 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "gpu_backend.h"
+#include "settings.h"
+
+#include "util/state_wrapper.h"
+
 #include "common/align.h"
 #include "common/log.h"
 #include "common/timer.h"
-#include "settings.h"
-#include "util/state_wrapper.h"
+
 Log_SetChannel(GPUBackend);
 
 std::unique_ptr<GPUBackend> g_gpu_backend;
@@ -26,7 +29,7 @@ bool GPUBackend::Initialize(bool force_thread)
 void GPUBackend::Reset()
 {
   Sync(true);
-  m_drawing_area = {};
+  DrawingAreaChanged(GPUDrawingArea{0, 0, 0, 0}, GSVector4i::zero());
 }
 
 void GPUBackend::UpdateSettings()
@@ -310,8 +313,8 @@ void GPUBackend::HandleCommand(const GPUBackendCommand* cmd)
     case GPUBackendCommandType::SetDrawingArea:
     {
       FlushRender();
-      m_drawing_area = static_cast<const GPUBackendSetDrawingAreaCommand*>(cmd)->new_area;
-      DrawingAreaChanged();
+      const GPUBackendSetDrawingAreaCommand* ccmd = static_cast<const GPUBackendSetDrawingAreaCommand*>(cmd);
+      DrawingAreaChanged(ccmd->new_area, GSVector4i::load<false>(ccmd->new_clamped_area));
     }
     break;
 

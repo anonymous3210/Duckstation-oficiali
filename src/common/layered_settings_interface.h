@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 #include "settings_interface.h"
@@ -10,7 +10,6 @@ class LayeredSettingsInterface final : public SettingsInterface
 public:
   enum Layer : u32
   {
-    LAYER_CMDLINE,
     LAYER_GAME,
     LAYER_INPUT,
     LAYER_BASE,
@@ -66,7 +65,7 @@ public:
   using SettingsInterface::GetUIntValue;
 
 private:
-  static constexpr Layer FIRST_LAYER = LAYER_CMDLINE;
+  static constexpr Layer FIRST_LAYER = LAYER_GAME;
   static constexpr Layer LAST_LAYER = LAYER_BASE;
 
   std::array<SettingsInterface*, NUM_LAYERS> m_layers{};

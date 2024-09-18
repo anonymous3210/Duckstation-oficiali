@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -78,9 +78,6 @@ public:
   explicit MainWindow();
   ~MainWindow();
 
-  /// Sets application theme according to settings.
-  static void updateApplicationTheme();
-
   /// Performs update check if enabled in settings.
   void startupUpdateCheck();
 
@@ -101,6 +98,9 @@ public:
 
   /// Accessors for child windows.
   CheatManagerWindow* getCheatManagerWindow() const { return m_cheat_manager_window; }
+
+  /// Opens the editor for a specific input profile.
+  void openInputProfileEditor(const std::string_view name);
 
 public Q_SLOTS:
   /// Updates debug menu visibility (hides if disabled).
@@ -140,6 +140,8 @@ private Q_SLOTS:
   void onSystemPaused();
   void onSystemResumed();
   void onRunningGameChanged(const QString& filename, const QString& game_serial, const QString& game_title);
+  void onMediaCaptureStarted();
+  void onMediaCaptureStopped();
   void onAchievementsLoginRequested(Achievements::LoginRequestReason reason);
   void onAchievementsChallengeModeChanged(bool enabled);
   void onApplicationStateChanged(Qt::ApplicationState state);
@@ -174,6 +176,7 @@ private Q_SLOTS:
   void onToolsMemoryCardEditorTriggered();
   void onToolsMemoryScannerTriggered();
   void onToolsCoverDownloaderTriggered();
+  void onToolsMediaCaptureToggled(bool checked);
   void onToolsOpenDataDirectoryTriggered();
   void onSettingsTriggeredFromToolbar();
 
@@ -202,9 +205,6 @@ protected:
 #endif
 
 private:
-  static void setStyleFromSettings();
-  static void setIconThemeFromSettings();
-
   /// Initializes the window. Call once at startup.
   void initialize();
 
@@ -239,21 +239,21 @@ private:
   void updateDisplayWidgetCursor();
   void updateDisplayRelatedActions(bool has_surface, bool render_to_main, bool fullscreen);
 
-  SettingsWindow* getSettingsDialog();
+  SettingsWindow* getSettingsWindow();
   void doSettings(const char* category = nullptr);
 
+  ControllerSettingsWindow* getControllerSettingsWindow();
   void doControllerSettings(ControllerSettingsWindow::Category category = ControllerSettingsWindow::Category::Count);
 
   void updateDebugMenuCPUExecutionMode();
   void updateDebugMenuGPURenderer();
   void updateDebugMenuCropMode();
-  void updateMenuSelectedTheme();
   std::string getDeviceDiscPath(const QString& title);
   void setGameListEntryCoverImage(const GameList::Entry* entry);
   void clearGameListEntryPlayTime(const GameList::Entry* entry);
-  void setTheme(const QString& theme);
   void updateTheme();
   void reloadThemeSpecificImages();
+  void onSettingsThemeChanged();
   void destroySubWindows();
 
   void registerForDeviceNotifications();
@@ -304,7 +304,6 @@ private:
   MemoryScannerWindow* m_memory_scanner_window = nullptr;
 
   bool m_was_paused_by_focus_loss = false;
-  bool m_open_debugger_on_start = false;
   bool m_relative_mouse_mode = false;
   bool m_hide_mouse_cursor = false;
 

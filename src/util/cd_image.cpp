@@ -1,7 +1,8 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cd_image.h"
+
 #include "common/assert.h"
 #include "common/bitutils.h"
 #include "common/error.h"
@@ -9,7 +10,9 @@
 #include "common/log.h"
 #include "common/path.h"
 #include "common/string_util.h"
+
 #include <array>
+
 Log_SetChannel(CDImage);
 
 CDImage::CDImage() = default;
@@ -127,7 +130,7 @@ std::unique_ptr<CDImage> CDImage::Open(const char* filename, bool allow_patches,
     {
       image = CDImage::OverlayPPFPatch(ppf_filename.c_str(), std::move(image));
       if (!image)
-        Error::SetString(error, fmt::format("Failed to apply ppf patch from '{}'.", ppf_filename));
+        Error::SetStringFmt(error, "Failed to apply ppf patch from '{}'.", ppf_filename);
     }
   }
 
@@ -264,9 +267,26 @@ u32 CDImage::Read(ReadMode read_mode, u32 sector_count, void* buffer)
     switch (read_mode)
     {
       case ReadMode::DataOnly:
-        std::memcpy(buffer_ptr, raw_sector + 24, DATA_SECTOR_SIZE);
+      {
+        const SectorHeader* header = reinterpret_cast<const SectorHeader*>(raw_sector + SECTOR_SYNC_SIZE);
+        if (header->sector_mode == 1)
+        {
+          std::memcpy(buffer_ptr, raw_sector + SECTOR_SYNC_SIZE + MODE1_HEADER_SIZE, DATA_SECTOR_SIZE);
+        }
+        else if (header->sector_mode == 2)
+        {
+          std::memcpy(buffer_ptr, raw_sector + SECTOR_SYNC_SIZE + MODE2_HEADER_SIZE, DATA_SECTOR_SIZE);
+        }
+        else
+        {
+          ERROR_LOG("Invalid sector mode {} at LBA {}", header->sector_mode,
+                    m_current_index->start_lba_on_disc + m_position_in_track);
+          break;
+        }
+
         buffer_ptr += DATA_SECTOR_SIZE;
-        break;
+      }
+      break;
 
       case ReadMode::RawNoSync:
         std::memcpy(buffer_ptr, raw_sector + SECTOR_SYNC_SIZE, RAW_SECTOR_SIZE - SECTOR_SYNC_SIZE);

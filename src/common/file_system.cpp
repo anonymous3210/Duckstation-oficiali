@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "file_system.h"
 #include "assert.h"
@@ -8,6 +8,8 @@
 #include "path.h"
 #include "string_util.h"
 #include "timer.h"
+
+#include "fmt/format.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -1174,23 +1176,49 @@ void FileSystem::AtomicRenamedFileDeleter::operator()(std::FILE* fp)
     return;
 
   Error error;
+
+  // final filename empty => discarded.
+  if (!m_final_filename.empty())
+  {
+    if (!commit(fp, &error))
+    {
+      ERROR_LOG("Failed to commit temporary file '{}', discarding. Error was {}.", Path::GetFileName(m_temp_filename),
+                error.GetDescription());
+    }
+
+    return;
+  }
+
+  // we're discarding the file, don't care if it fails.
+  std::fclose(fp);
+
+  if (!DeleteFile(m_temp_filename.c_str(), &error))
+    ERROR_LOG("Failed to delete temporary file '{}': {}", Path::GetFileName(m_temp_filename), error.GetDescription());
+}
+
+bool FileSystem::AtomicRenamedFileDeleter::commit(std::FILE* fp, Error* error)
+{
+  if (!fp) [[unlikely]]
+  {
+    Error::SetStringView(error, "File pointer is null.");
+    return false;
+  }
+
   if (std::fclose(fp) != 0)
   {
-    error.SetErrno(errno);
-    ERROR_LOG("Failed to close temporary file '{}', discarding.", Path::GetFileName(m_temp_filename));
+    Error::SetErrno(error, "fclose() failed: ", errno);
     m_final_filename.clear();
   }
 
-  // final filename empty => discarded.
-  if (m_final_filename.empty())
+  // Should not have been discarded.
+  if (!m_final_filename.empty())
   {
-    if (!DeleteFile(m_temp_filename.c_str(), &error))
-      ERROR_LOG("Failed to delete temporary file '{}': {}", Path::GetFileName(m_temp_filename), error.GetDescription());
+    return RenamePath(m_temp_filename.c_str(), m_final_filename.c_str(), error);
   }
   else
   {
-    if (!RenamePath(m_temp_filename.c_str(), m_final_filename.c_str(), &error))
-      ERROR_LOG("Failed to rename temporary file '{}': {}", Path::GetFileName(m_temp_filename), error.GetDescription());
+    Error::SetStringView(error, "File has already been discarded.");
+    return DeleteFile(m_temp_filename.c_str(), error);
   }
 }
 
@@ -1199,8 +1227,7 @@ void FileSystem::AtomicRenamedFileDeleter::discard()
   m_final_filename = {};
 }
 
-FileSystem::AtomicRenamedFile FileSystem::CreateAtomicRenamedFile(std::string filename, const char* mode,
-                                                                  Error* error /*= nullptr*/)
+FileSystem::AtomicRenamedFile FileSystem::CreateAtomicRenamedFile(std::string filename, Error* error /*= nullptr*/)
 {
   std::string temp_filename;
   std::FILE* fp = nullptr;
@@ -1214,14 +1241,29 @@ FileSystem::AtomicRenamedFile FileSystem::CreateAtomicRenamedFile(std::string fi
     StringUtil::Strlcpy(name_buf.get() + filename_length, ".XXXXXX", name_buf_size);
 
 #ifdef _WIN32
-    _mktemp_s(name_buf.get(), name_buf_size);
-#elif defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__)
-    mkstemp(name_buf.get());
+    const errno_t err = _mktemp_s(name_buf.get(), name_buf_size);
+    if (err == 0)
+      fp = OpenCFile(name_buf.get(), "w+b", error);
+    else
+      Error::SetErrno(error, "_mktemp_s() failed: ", err);
+
+#elif defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__) || defined(__FreeBSD__)
+    const int fd = mkstemp(name_buf.get());
+    if (fd >= 0)
+    {
+      fp = fdopen(fd, "w+b");
+      if (!fp)
+        Error::SetErrno(error, "fdopen() failed: ", errno);
+    }
+    else
+    {
+      Error::SetErrno(error, "mkstemp() failed: ", errno);
+    }
 #else
     mktemp(name_buf.get());
+    fp = OpenCFile(name_buf.get(), "w+b", error);
 #endif
 
-    fp = OpenCFile(name_buf.get(), mode, error);
     if (fp)
       temp_filename.assign(name_buf.get(), name_buf_size - 1);
     else
@@ -1234,7 +1276,10 @@ FileSystem::AtomicRenamedFile FileSystem::CreateAtomicRenamedFile(std::string fi
 bool FileSystem::WriteAtomicRenamedFile(std::string filename, const void* data, size_t data_length,
                                         Error* error /*= nullptr*/)
 {
-  AtomicRenamedFile fp = CreateAtomicRenamedFile(std::move(filename), "wb", error);
+  AtomicRenamedFile fp = CreateAtomicRenamedFile(std::move(filename), error);
+  if (!fp)
+    return false;
+
   if (data_length > 0 && std::fwrite(data, 1u, data_length, fp.get()) != data_length) [[unlikely]]
   {
     Error::SetErrno(error, "fwrite() failed: ", errno);
@@ -1248,6 +1293,15 @@ bool FileSystem::WriteAtomicRenamedFile(std::string filename, const void* data, 
 void FileSystem::DiscardAtomicRenamedFile(AtomicRenamedFile& file)
 {
   file.get_deleter().discard();
+}
+
+bool FileSystem::CommitAtomicRenamedFile(AtomicRenamedFile& file, Error* error)
+{
+  if (file.get_deleter().commit(file.release(), error))
+    return true;
+
+  Error::AddPrefix(error, "Failed to commit file: ");
+  return false;
 }
 
 #endif
@@ -1398,9 +1452,9 @@ s64 FileSystem::GetPathFileSize(const char* Path)
   return sd.Size;
 }
 
-std::optional<std::vector<u8>> FileSystem::ReadBinaryFile(const char* filename, Error* error)
+std::optional<DynamicHeapArray<u8>> FileSystem::ReadBinaryFile(const char* filename, Error* error)
 {
-  std::optional<std::vector<u8>> ret;
+  std::optional<DynamicHeapArray<u8>> ret;
 
   ManagedCFilePtr fp = OpenManagedCFile(filename, "rb", error);
   if (!fp)
@@ -1410,9 +1464,9 @@ std::optional<std::vector<u8>> FileSystem::ReadBinaryFile(const char* filename, 
   return ret;
 }
 
-std::optional<std::vector<u8>> FileSystem::ReadBinaryFile(std::FILE* fp, Error* error)
+std::optional<DynamicHeapArray<u8>> FileSystem::ReadBinaryFile(std::FILE* fp, Error* error)
 {
-  std::optional<std::vector<u8>> ret;
+  std::optional<DynamicHeapArray<u8>> ret;
 
   if (FSeek64(fp, 0, SEEK_END) != 0) [[unlikely]]
   {
@@ -1442,7 +1496,7 @@ std::optional<std::vector<u8>> FileSystem::ReadBinaryFile(std::FILE* fp, Error* 
     return ret;
   }
 
-  ret = std::vector<u8>(static_cast<size_t>(size));
+  ret = DynamicHeapArray<u8>(static_cast<size_t>(size));
   if (size > 0 && std::fread(ret->data(), 1u, static_cast<size_t>(size), fp) != static_cast<size_t>(size)) [[unlikely]]
   {
     Error::SetErrno(error, "fread() failed: ", errno);
@@ -2432,7 +2486,7 @@ bool FileSystem::DirectoryExists(const char* path)
 bool FileSystem::IsRealDirectory(const char* path)
 {
   struct stat sysStatData;
-  if (stat(path, &sysStatData) < 0)
+  if (lstat(path, &sysStatData) < 0)
     return false;
 
   return (S_ISDIR(sysStatData.st_mode) && !S_ISLNK(sysStatData.st_mode));

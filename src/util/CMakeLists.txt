@@ -1,6 +1,7 @@
 add_library(util
   audio_stream.cpp
   audio_stream.h
+  audio_stream_channel_maps.inl
   cd_image.cpp
   cd_image.h
   cd_image_bin.cpp
@@ -17,6 +18,8 @@ add_library(util
   cd_image_ppf.cpp
   cd_subchannel_replacement.cpp
   cd_subchannel_replacement.h
+  compress_helpers.cpp
+  compress_helpers.h
   cue_parser.cpp
   cue_parser.h
   gpu_device.cpp
@@ -44,6 +47,8 @@ add_library(util
   input_source.h
   iso_reader.cpp
   iso_reader.h
+  media_capture.cpp
+  media_capture.h
   page_fault_handler.cpp
   page_fault_handler.h
   platform_misc.h
@@ -73,7 +78,7 @@ target_precompile_headers(util PRIVATE "pch.h")
 target_include_directories(util PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_include_directories(util PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(util PUBLIC common simpleini imgui)
-target_link_libraries(util PRIVATE libchdr JPEG::JPEG PNG::PNG WebP::libwebp ZLIB::ZLIB SoundTouch::SoundTouchDLL xxhash Zstd::Zstd reshadefx)
+target_link_libraries(util PRIVATE libchdr JPEG::JPEG PNG::PNG WebP::libwebp ZLIB::ZLIB SoundTouch::SoundTouchDLL xxhash Zstd::Zstd reshadefx kissfft)
 
 if(ENABLE_X11)
   target_compile_definitions(util PRIVATE "-DENABLE_X11=1")
@@ -167,6 +172,7 @@ endif()
 
 if(ENABLE_VULKAN OR APPLE)
   # shaderc is loaded dynamically to reduce module loads on startup.
+  get_target_property(SHADERC_INCLUDE_DIR Shaderc::shaderc_shared INTERFACE_INCLUDE_DIRECTORIES)
   target_include_directories(util PUBLIC ${SHADERC_INCLUDE_DIR})
 endif()
 
@@ -179,9 +185,10 @@ if(NOT ANDROID)
   )
   target_link_libraries(util PUBLIC
     cubeb
-    freesurround
     SDL2::SDL2
   )
+  # FFmpeg loaded dynamically on demand.
+  target_include_directories(util PUBLIC ${FFMPEG_INCLUDE_DIRS})
 endif()
 
 if(WIN32)
@@ -288,9 +295,26 @@ function(add_util_resources target)
       message(WARNING "MoltenVK not found in path, it will depend on the target system having it.")
     endif()
 
-    # Copy shaderc into the bundle
-    get_target_property(SPIRV_CROSS_LIBRARY spirv-cross-c-shared IMPORTED_LOCATION_RELEASE)
-    target_sources(duckstation-qt PRIVATE "${SHADERC_LIBRARY}" "${SPIRV_CROSS_LIBRARY}")
+    # Copy shaderc/spirv-cross into the bundle
+    get_target_property(SPIRV_CROSS_LIBRARY spirv-cross-c-shared IMPORTED_SONAME_RELEASE)
+    get_target_property(SHADERC_LIBRARY Shaderc::shaderc_shared IMPORTED_LOCATION_RELEASE)
+    target_sources(${target} PRIVATE "${SHADERC_LIBRARY}" "${SPIRV_CROSS_LIBRARY}")
     set_source_files_properties("${SHADERC_LIBRARY}" "${SPIRV_CROSS_LIBRARY}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+
+    # Copy FFmpeg libraries into the bundle
+    foreach(component avcodec avformat avutil swresample swscale)
+      string(REGEX REPLACE "\([0-9]+\)\.[0-9]+\.[0-9]+" "\\1" major "${FFMPEG_${component}_VERSION}")
+      string(REPLACE "lib${component}.dylib" "lib${component}.${major}.dylib" version_lib "${FFMPEG_${component}_LIBRARIES}")
+      target_sources(${target} PRIVATE ${version_lib})
+      set_source_files_properties(${target} PRIVATE ${version_lib} PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+    endforeach()
+  elseif(ALLOW_INSTALL)
+    # Ensure we look for dependency libraries in the installation directory.
+    set_target_properties(${target} PROPERTIES INSTALL_RPATH "$ORIGIN")
+
+    # Copy dependency libraries to installation directory.
+    install_imported_dep_library(Shaderc::shaderc_shared)
+    install_imported_dep_library(spirv-cross-c-shared)
+    install_imported_dep_library(SoundTouch::SoundTouchDLL)
   endif()
 endfunction()

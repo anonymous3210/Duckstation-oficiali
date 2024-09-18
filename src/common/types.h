@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
+
 #include <bit>
 #include <cstdint>
 #include <cstring>
@@ -9,7 +10,6 @@
 #include <type_traits>
 
 // Force inline helper
-#ifndef ALWAYS_INLINE
 #if defined(_MSC_VER)
 #define ALWAYS_INLINE __forceinline
 #elif defined(__GNUC__) || defined(__clang__)
@@ -17,13 +17,21 @@
 #else
 #define ALWAYS_INLINE inline
 #endif
-#endif
 
 // Force inline in non-debug helper
 #ifdef _DEBUG
 #define ALWAYS_INLINE_RELEASE inline
 #else
 #define ALWAYS_INLINE_RELEASE ALWAYS_INLINE
+#endif
+
+// Prevent inlining
+#if defined(_MSC_VER)
+#define NEVER_INLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define NEVER_INLINE __attribute__((noinline))
+#else
+#define NEVER_INLINE
 #endif
 
 // unreferenced parameter macro

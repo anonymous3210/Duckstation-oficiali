@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -12,6 +12,10 @@
 #include "effect_module.hpp"
 
 #include <random>
+
+namespace reshadefx {
+class codegen;
+}
 
 class Error;
 
@@ -31,9 +35,9 @@ public:
 
   bool ResizeOutput(GPUTexture::Format format, u32 width, u32 height) override;
   bool CompilePipeline(GPUTexture::Format format, u32 width, u32 height, ProgressCallback* progress) override;
-  bool Apply(GPUTexture* input_color, GPUTexture* input_depth, GPUTexture* final_target, GSVector4i final_rect,
-             s32 orig_width, s32 orig_height, s32 native_width, s32 native_height, u32 target_width,
-             u32 target_height) override;
+  GPUDevice::PresentResult Apply(GPUTexture* input_color, GPUTexture* input_depth, GPUTexture* final_target,
+                                 GSVector4i final_rect, s32 orig_width, s32 orig_height, s32 native_width,
+                                 s32 native_height, u32 target_width, u32 target_height) override;
 
 private:
   using TextureID = s32;
@@ -94,10 +98,10 @@ private:
     ShaderOption::ValueVector value;
   };
 
-  bool CreateModule(s32 buffer_width, s32 buffer_height, reshadefx::module* mod, std::string code, Error* error);
-  bool CreateOptions(const reshadefx::module& mod, Error* error);
-  bool GetSourceOption(const reshadefx::uniform_info& ui, SourceOptionType* si, Error* error);
-  bool CreatePasses(GPUTexture::Format backbuffer_format, reshadefx::module& mod, Error* error);
+  bool CreateModule(s32 buffer_width, s32 buffer_height, reshadefx::codegen* cg, std::string code, Error* error);
+  bool CreateOptions(const reshadefx::effect_module& mod, Error* error);
+  bool GetSourceOption(const reshadefx::uniform& ui, SourceOptionType* si, Error* error);
+  bool CreatePasses(GPUTexture::Format backbuffer_format, const reshadefx::effect_module& mod, Error* error);
 
   const char* GetTextureNameForID(TextureID id) const;
   GPUTexture* GetTextureByID(TextureID id, GPUTexture* input_color, GPUTexture* input_depth,

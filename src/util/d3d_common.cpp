@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "d3d_common.h"
 #include "gpu_device.h"
 
 #include "common/assert.h"
+#include "common/dynamic_library.h"
 #include "common/error.h"
 #include "common/file_system.h"
 #include "common/gsvector.h"
@@ -15,51 +16,81 @@
 
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <dxcapi.h>
 #include <dxgi1_5.h>
 
 Log_SetChannel(D3DCommon);
 
-const char* D3DCommon::GetFeatureLevelString(D3D_FEATURE_LEVEL feature_level)
+namespace D3DCommon {
+namespace {
+struct FeatureLevelTableEntry
 {
-  static constexpr std::array<std::tuple<D3D_FEATURE_LEVEL, const char*>, 11> feature_level_names = {{
-    {D3D_FEATURE_LEVEL_1_0_CORE, "D3D_FEATURE_LEVEL_1_0_CORE"},
-    {D3D_FEATURE_LEVEL_9_1, "D3D_FEATURE_LEVEL_9_1"},
-    {D3D_FEATURE_LEVEL_9_2, "D3D_FEATURE_LEVEL_9_2"},
-    {D3D_FEATURE_LEVEL_9_3, "D3D_FEATURE_LEVEL_9_3"},
-    {D3D_FEATURE_LEVEL_10_0, "D3D_FEATURE_LEVEL_10_0"},
-    {D3D_FEATURE_LEVEL_10_1, "D3D_FEATURE_LEVEL_10_1"},
-    {D3D_FEATURE_LEVEL_11_0, "D3D_FEATURE_LEVEL_11_0"},
-    {D3D_FEATURE_LEVEL_11_1, "D3D_FEATURE_LEVEL_11_1"},
-    {D3D_FEATURE_LEVEL_12_0, "D3D_FEATURE_LEVEL_12_0"},
-    {D3D_FEATURE_LEVEL_12_1, "D3D_FEATURE_LEVEL_12_1"},
-    {D3D_FEATURE_LEVEL_12_2, "D3D_FEATURE_LEVEL_12_2"},
-  }};
+  D3D_FEATURE_LEVEL d3d_feature_level;
+  u16 render_api_version;
+  u16 shader_model_number;
+  const char* feature_level_str;
+};
+} // namespace
 
-  for (const auto& [fl, name] : feature_level_names)
-  {
-    if (fl == feature_level)
-      return name;
-  }
+static std::optional<DynamicHeapArray<u8>> CompileShaderWithFXC(u32 shader_model, bool debug_device,
+                                                                GPUShaderStage stage, std::string_view source,
+                                                                const char* entry_point, Error* error);
+static std::optional<DynamicHeapArray<u8>> CompileShaderWithDXC(u32 shader_model, bool debug_device,
+                                                                GPUShaderStage stage, std::string_view source,
+                                                                const char* entry_point, Error* error);
+static bool LoadDXCompilerLibrary(Error* error);
 
-  return "D3D_FEATURE_LEVEL_UNKNOWN";
+static DynamicLibrary s_dxcompiler_library;
+static DxcCreateInstanceProc s_DxcCreateInstance;
+
+static constexpr std::array<FeatureLevelTableEntry, 11> s_feature_levels = {{
+  {D3D_FEATURE_LEVEL_1_0_CORE, 100, 40, "D3D_FEATURE_LEVEL_1_0_CORE"},
+  {D3D_FEATURE_LEVEL_9_1, 910, 40, "D3D_FEATURE_LEVEL_9_1"},
+  {D3D_FEATURE_LEVEL_9_2, 920, 40, "D3D_FEATURE_LEVEL_9_2"},
+  {D3D_FEATURE_LEVEL_9_3, 930, 40, "D3D_FEATURE_LEVEL_9_3"},
+  {D3D_FEATURE_LEVEL_10_0, 1000, 40, "D3D_FEATURE_LEVEL_10_0"},
+  {D3D_FEATURE_LEVEL_10_1, 1010, 41, "D3D_FEATURE_LEVEL_10_1"},
+  {D3D_FEATURE_LEVEL_11_0, 1100, 50, "D3D_FEATURE_LEVEL_11_0"},
+  {D3D_FEATURE_LEVEL_11_1, 1110, 50, "D3D_FEATURE_LEVEL_11_1"},
+  {D3D_FEATURE_LEVEL_12_0, 1200, 60, "D3D_FEATURE_LEVEL_12_0"},
+  {D3D_FEATURE_LEVEL_12_1, 1210, 60, "D3D_FEATURE_LEVEL_12_1"},
+  {D3D_FEATURE_LEVEL_12_2, 1220, 60, "D3D_FEATURE_LEVEL_12_2"},
+}};
+} // namespace D3DCommon
+
+const char* D3DCommon::GetFeatureLevelString(u32 render_api_version)
+{
+  const auto iter =
+    std::find_if(s_feature_levels.begin(), s_feature_levels.end(),
+                 [&render_api_version](const auto& it) { return it.render_api_version == render_api_version; });
+  return (iter != s_feature_levels.end()) ? iter->feature_level_str : "D3D_FEATURE_LEVEL_UNKNOWN";
 }
 
-const char* D3DCommon::GetFeatureLevelShaderModelString(D3D_FEATURE_LEVEL feature_level)
+u32 D3DCommon::GetRenderAPIVersionForFeatureLevel(D3D_FEATURE_LEVEL feature_level)
 {
-  static constexpr std::array<std::tuple<D3D_FEATURE_LEVEL, const char*>, 4> feature_level_names = {{
-    {D3D_FEATURE_LEVEL_10_0, "sm40"},
-    {D3D_FEATURE_LEVEL_10_1, "sm41"},
-    {D3D_FEATURE_LEVEL_11_0, "sm50"},
-    {D3D_FEATURE_LEVEL_11_1, "sm50"},
-  }};
-
-  for (const auto& [fl, name] : feature_level_names)
+  const FeatureLevelTableEntry* highest_entry = nullptr;
+  for (const FeatureLevelTableEntry& entry : s_feature_levels)
   {
-    if (fl == feature_level)
-      return name;
+    if (feature_level >= entry.d3d_feature_level)
+      highest_entry = &entry;
   }
+  return highest_entry ? highest_entry->render_api_version : 0;
+}
 
-  return "unk";
+D3D_FEATURE_LEVEL D3DCommon::GetFeatureLevelForNumber(u32 render_api_version)
+{
+  const auto iter =
+    std::find_if(s_feature_levels.begin(), s_feature_levels.end(),
+                 [&render_api_version](const auto& it) { return it.render_api_version == render_api_version; });
+  return (iter != s_feature_levels.end()) ? iter->d3d_feature_level : D3D_FEATURE_LEVEL_1_0_CORE;
+}
+
+u32 D3DCommon::GetShaderModelForFeatureLevelNumber(u32 render_api_version)
+{
+  const auto iter =
+    std::find_if(s_feature_levels.begin(), s_feature_levels.end(),
+                 [&render_api_version](const auto& it) { return it.render_api_version == render_api_version; });
+  return (iter != s_feature_levels.end()) ? iter->shader_model_number : 40;
 }
 
 D3D_FEATURE_LEVEL D3DCommon::GetDeviceMaxFeatureLevel(IDXGIAdapter1* adapter)
@@ -379,26 +410,19 @@ std::string D3DCommon::GetDriverVersionFromLUID(const LUID& luid)
   return ret;
 }
 
-u32 D3DCommon::GetShaderModelForFeatureLevel(D3D_FEATURE_LEVEL feature_level)
-{
-  switch (feature_level)
-  {
-    case D3D_FEATURE_LEVEL_10_0:
-      return 40;
-
-    case D3D_FEATURE_LEVEL_10_1:
-      return 41;
-
-    case D3D_FEATURE_LEVEL_11_0:
-    case D3D_FEATURE_LEVEL_11_1:
-    default:
-      return 50;
-  }
-}
-
 std::optional<DynamicHeapArray<u8>> D3DCommon::CompileShader(u32 shader_model, bool debug_device, GPUShaderStage stage,
                                                              std::string_view source, const char* entry_point,
                                                              Error* error)
+{
+  if (shader_model >= 60)
+    return CompileShaderWithDXC(shader_model, debug_device, stage, source, entry_point, error);
+  else
+    return CompileShaderWithFXC(shader_model, debug_device, stage, source, entry_point, error);
+}
+
+std::optional<DynamicHeapArray<u8>> D3DCommon::CompileShaderWithFXC(u32 shader_model, bool debug_device,
+                                                                    GPUShaderStage stage, std::string_view source,
+                                                                    const char* entry_point, Error* error)
 {
   const char* target;
   switch (shader_model)
@@ -462,6 +486,120 @@ std::optional<DynamicHeapArray<u8>> D3DCommon::CompileShader(u32 shader_model, b
   error_blob.Reset();
 
   return DynamicHeapArray<u8>(static_cast<const u8*>(blob->GetBufferPointer()), blob->GetBufferSize());
+}
+
+std::optional<DynamicHeapArray<u8>> D3DCommon::CompileShaderWithDXC(u32 shader_model, bool debug_device,
+                                                                    GPUShaderStage stage, std::string_view source,
+                                                                    const char* entry_point, Error* error)
+{
+  if (!LoadDXCompilerLibrary(error))
+    return {};
+
+  HRESULT hr;
+  Microsoft::WRL::ComPtr<IDxcUtils> utils;
+  if (FAILED(hr = s_DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(utils.GetAddressOf())))) [[unlikely]]
+  {
+    Error::SetHResult(error, "DxcCreateInstance(CLSID_DxcUtils) failed: ", hr);
+    return {};
+  }
+
+  Microsoft::WRL::ComPtr<IDxcBlobEncoding> source_blob;
+  if (FAILED(hr = utils->CreateBlob(source.data(), static_cast<u32>(source.size()), DXC_CP_UTF8,
+                                    source_blob.GetAddressOf()))) [[unlikely]]
+  {
+    Error::SetHResult(error, "CreateBlob() failed: ", hr);
+    return {};
+  }
+
+  Microsoft::WRL::ComPtr<IDxcCompiler> compiler;
+  if (FAILED(hr = s_DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(compiler.GetAddressOf())))) [[unlikely]]
+  {
+    Error::SetHResult(error, "DxcCreateInstance(CLSID_DxcCompiler) failed: ", hr);
+    return {};
+  }
+
+  const wchar_t* target;
+  switch (shader_model)
+  {
+    case 60:
+    {
+      static constexpr std::array<const wchar_t*, static_cast<u32>(GPUShaderStage::MaxCount)> targets = {
+        {L"vs_6_0", L"ps_6_0", L"gs_6_0", L"cs_6_0"}};
+      target = targets[static_cast<int>(stage)];
+    }
+    break;
+
+    default:
+      Error::SetStringFmt(error, "Unknown shader model: {}", shader_model);
+      return {};
+  }
+
+  static constexpr const wchar_t* nondebug_arguments[] = {
+    L"-Qstrip_reflect",
+    L"-Qstrip_debug",
+    DXC_ARG_OPTIMIZATION_LEVEL3,
+  };
+  static constexpr const wchar_t* debug_arguments[] = {
+    L"-Qstrip_reflect",
+    DXC_ARG_DEBUG,
+    L"-Qembed_debug",
+    DXC_ARG_SKIP_OPTIMIZATIONS,
+  };
+  const wchar_t* const* arguments = debug_device ? debug_arguments : nondebug_arguments;
+  const size_t arguments_size = debug_device ? std::size(debug_arguments) : std::size(nondebug_arguments);
+
+  Microsoft::WRL::ComPtr<IDxcOperationResult> result;
+  Microsoft::WRL::ComPtr<IDxcResult> compile_result;
+  Microsoft::WRL::ComPtr<IDxcBlobUtf8> error_output;
+  std::string_view error_output_sv;
+
+  hr = compiler->Compile(source_blob.Get(), L"source", StringUtil::UTF8StringToWideString(entry_point).c_str(), target,
+                         const_cast<LPCWSTR*>(arguments), static_cast<u32>(arguments_size), nullptr, 0, nullptr,
+                         result.GetAddressOf());
+
+  if (SUCCEEDED(result.As(&compile_result)) && compile_result->HasOutput(DXC_OUT_ERRORS) &&
+      SUCCEEDED(compile_result->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(error_output.GetAddressOf()), nullptr)))
+  {
+    error_output_sv =
+      std::string_view(static_cast<const char*>(error_output->GetBufferPointer()), error_output->GetBufferSize());
+  }
+
+  if (FAILED(hr) || (FAILED(result->GetStatus(&hr)) || FAILED(hr)))
+  {
+    Error::SetHResult(error, "Compile() failed: ", hr);
+
+    ERROR_LOG("Failed to compile {} {}:\n{}", GPUShader::GetStageName(stage), shader_model, error_output_sv);
+    GPUDevice::DumpBadShader(source, error_output_sv);
+    return {};
+  }
+
+  if (!error_output_sv.empty())
+    WARNING_LOG("{} {} compiled with warnings:\n{}", GPUShader::GetStageName(stage), shader_model, error_output_sv);
+
+  Microsoft::WRL::ComPtr<IDxcBlob> object_blob;
+  if (!compile_result->HasOutput(DXC_OUT_OBJECT) ||
+      FAILED(hr = compile_result->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(object_blob.GetAddressOf()), nullptr)))
+  {
+    Error::SetHResult(error, "GetOutput(DXC_OUT_OBJECT) failed: ", hr);
+    return {};
+  }
+
+  return DynamicHeapArray<u8>(static_cast<const u8*>(object_blob->GetBufferPointer()), object_blob->GetBufferSize());
+}
+
+bool D3DCommon::LoadDXCompilerLibrary(Error* error)
+{
+  if (s_dxcompiler_library.IsOpen())
+    return true;
+
+  if (!s_dxcompiler_library.Open("dxcompiler.dll", error) ||
+      !s_dxcompiler_library.GetSymbol("DxcCreateInstance", &s_DxcCreateInstance))
+  {
+    s_dxcompiler_library.Close();
+    return false;
+  }
+
+  return true;
 }
 
 static constexpr std::array<D3DCommon::DXGIFormatMapping, static_cast<int>(GPUTexture::Format::MaxCount)>

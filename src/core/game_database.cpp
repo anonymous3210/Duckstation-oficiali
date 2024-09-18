@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "game_database.h"
 #include "controller.h"
@@ -27,16 +27,20 @@
 #include <sstream>
 #include <type_traits>
 
+#include "IconsEmoji.h"
 #include "IconsFontAwesome5.h"
+#include "fmt/format.h"
 
 Log_SetChannel(GameDatabase);
+
+#include "common/ryml_helpers.h"
 
 namespace GameDatabase {
 
 enum : u32
 {
   GAME_DATABASE_CACHE_SIGNATURE = 0x45434C48,
-  GAME_DATABASE_CACHE_VERSION = 12,
+  GAME_DATABASE_CACHE_VERSION = 15,
 };
 
 static Entry* GetMutableEntry(std::string_view serial);
@@ -52,14 +56,24 @@ static bool ParseYamlCodes(u32 index, const ryml::ConstNodeRef& value, std::stri
 static bool LoadTrackHashes();
 
 static constexpr const std::array<const char*, static_cast<int>(CompatibilityRating::Count)>
-  s_compatibility_rating_names = {
-    {"Unknown", "DoesntBoot", "CrashesInIntro", "CrashesInGame", "GraphicalAudioIssues", "NoIssues"}};
+  s_compatibility_rating_names = {{
+    "Unknown",
+    "DoesntBoot",
+    "CrashesInIntro",
+    "CrashesInGame",
+    "GraphicalAudioIssues",
+    "NoIssues",
+  }};
 
 static constexpr const std::array<const char*, static_cast<size_t>(CompatibilityRating::Count)>
-  s_compatibility_rating_display_names = {
-    {TRANSLATE_NOOP("GameDatabase", "Unknown"), TRANSLATE_NOOP("GameDatabase", "Doesn't Boot"),
-     TRANSLATE_NOOP("GameDatabase", "Crashes In Intro"), TRANSLATE_NOOP("GameDatabase", "Crashes In-Game"),
-     TRANSLATE_NOOP("GameDatabase", "Graphical/Audio Issues"), TRANSLATE_NOOP("GameDatabase", "No Issues")}};
+  s_compatibility_rating_display_names = {{
+    TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Unknown", "CompatibilityRating"),
+    TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Doesn't Boot", "CompatibilityRating"),
+    TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Crashes In Intro", "CompatibilityRating"),
+    TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Crashes In-Game", "CompatibilityRating"),
+    TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Graphical/Audio Issues", "CompatibilityRating"),
+    TRANSLATE_DISAMBIG_NOOP("GameDatabase", "No Issues", "CompatibilityRating"),
+  }};
 
 static constexpr const std::array<const char*, static_cast<u32>(GameDatabase::Trait::Count)> s_trait_names = {{
   "ForceInterpreter",
@@ -68,11 +82,12 @@ static constexpr const std::array<const char*, static_cast<u32>(GameDatabase::Tr
   "ForceRoundTextureCoordinates",
   "ForceAccurateBlending",
   "ForceInterlacing",
+  "DisableAutoAnalogMode",
   "DisableTrueColor",
   "DisableUpscaling",
   "DisableTextureFiltering",
+  "DisableSpriteTextureFiltering",
   "DisableScaledDithering",
-  "DisableForceNTSCTimings",
   "DisableWidescreen",
   "DisablePGXP",
   "DisablePGXPCulling",
@@ -90,31 +105,32 @@ static constexpr const std::array<const char*, static_cast<u32>(GameDatabase::Tr
 }};
 
 static constexpr const std::array<const char*, static_cast<u32>(GameDatabase::Trait::Count)> s_trait_display_names = {{
-  TRANSLATE_NOOP("GameDatabase", "Force Interpreter"),
-  TRANSLATE_NOOP("GameDatabase", "Force Software Renderer"),
-  TRANSLATE_NOOP("GameDatabase", "Force Software Renderer For Readbacks"),
-  TRANSLATE_NOOP("GameDatabase", "Force Round Texture Coordinates"),
-  TRANSLATE_NOOP("GameDatabase", "Force Accurate Blending"),
-  TRANSLATE_NOOP("GameDatabase", "Force Interlacing"),
-  TRANSLATE_NOOP("GameDatabase", "Disable True Color"),
-  TRANSLATE_NOOP("GameDatabase", "Disable Upscaling"),
-  TRANSLATE_NOOP("GameDatabase", "Disable Texture Filtering"),
-  TRANSLATE_NOOP("GameDatabase", "Disable Scaled Dithering"),
-  TRANSLATE_NOOP("GameDatabase", "Disable Force NTSC Timings"),
-  TRANSLATE_NOOP("GameDatabase", "Disable Widescreen"),
-  TRANSLATE_NOOP("GameDatabase", "Disable PGXP"),
-  TRANSLATE_NOOP("GameDatabase", "Disable PGXP Culling"),
-  TRANSLATE_NOOP("GameDatabase", "Disable PGXP Texture Correction"),
-  TRANSLATE_NOOP("GameDatabase", "Disable PGXP Color Correction"),
-  TRANSLATE_NOOP("GameDatabase", "Disable PGXP Depth Buffer"),
-  TRANSLATE_NOOP("GameDatabase", "Disable PGXP Preserve Projection Floating Point"),
-  TRANSLATE_NOOP("GameDatabase", "Disable PGXP on 2D Polygons"),
-  TRANSLATE_NOOP("GameDatabase", "Force PGXP Vertex Cache"),
-  TRANSLATE_NOOP("GameDatabase", "Force PGXP CPU Mode"),
-  TRANSLATE_NOOP("GameDatabase", "Force Recompiler Memory Exceptions"),
-  TRANSLATE_NOOP("GameDatabase", "Force Recompiler ICache"),
-  TRANSLATE_NOOP("GameDatabase", "Force Recompiler LUT Fastmem"),
-  TRANSLATE_NOOP("GameDatabase", "Is LibCrypt Protected"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Force Interpreter", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Force Software Renderer", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Force Software Renderer For Readbacks", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Force Round Texture Coordinates", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Force Accurate Blending", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Force Interlacing", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable Automatic Analog Mode", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable True Color", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable Upscaling", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable Texture Filtering", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable Sprite Texture Filtering", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable Scaled Dithering", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable Widescreen", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable PGXP", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable PGXP Culling", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable PGXP Texture Correction", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable PGXP Color Correction", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable PGXP Depth Buffer", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable PGXP Preserve Projection Floating Point", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable PGXP on 2D Polygons", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Force PGXP Vertex Cache", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Force PGXP CPU Mode", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Force Recompiler Memory Exceptions", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Force Recompiler ICache", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Force Recompiler LUT Fastmem", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Is LibCrypt Protected", "GameDatabase::Trait"),
 }};
 
 static constexpr const char* GAMEDB_YAML_FILENAME = "gamedb.yaml";
@@ -128,119 +144,6 @@ static PreferUnorderedStringMap<u32> s_code_lookup;
 
 static TrackHashesMap s_track_hashes_map;
 } // namespace GameDatabase
-
-// RapidYAML utility routines.
-
-ALWAYS_INLINE std::string_view to_stringview(const c4::csubstr& s)
-{
-  return std::string_view(s.data(), s.size());
-}
-
-ALWAYS_INLINE std::string_view to_stringview(const c4::substr& s)
-{
-  return std::string_view(s.data(), s.size());
-}
-
-ALWAYS_INLINE c4::csubstr to_csubstr(std::string_view sv)
-{
-  return c4::csubstr(sv.data(), sv.length());
-}
-
-static bool GetStringFromObject(const ryml::ConstNodeRef& object, std::string_view key, std::string* dest)
-{
-  dest->clear();
-
-  const ryml::ConstNodeRef member = object.find_child(to_csubstr(key));
-  if (!member.valid())
-    return false;
-
-  const c4::csubstr val = member.val();
-  if (!val.empty())
-    dest->assign(val.data(), val.size());
-
-  return true;
-}
-
-template<typename T>
-static bool GetUIntFromObject(const ryml::ConstNodeRef& object, std::string_view key, T* dest)
-{
-  *dest = 0;
-
-  const ryml::ConstNodeRef member = object.find_child(to_csubstr(key));
-  if (!member.valid())
-    return false;
-
-  const c4::csubstr val = member.val();
-  if (val.empty())
-  {
-    ERROR_LOG("Unexpected empty value in {}", key);
-    return false;
-  }
-
-  const std::optional<T> opt_value = StringUtil::FromChars<T>(to_stringview(val));
-  if (!opt_value.has_value())
-  {
-    ERROR_LOG("Unexpected non-uint value in {}", key);
-    return false;
-  }
-
-  *dest = opt_value.value();
-  return true;
-}
-
-template<typename T>
-static std::optional<T> GetOptionalTFromObject(const ryml::ConstNodeRef& object, std::string_view key)
-{
-  std::optional<T> ret;
-
-  const ryml::ConstNodeRef member = object.find_child(to_csubstr(key));
-  if (member.valid())
-  {
-    const c4::csubstr val = member.val();
-    if (!val.empty())
-    {
-      ret = StringUtil::FromChars<T>(to_stringview(val));
-      if (!ret.has_value())
-      {
-        if constexpr (std::is_floating_point_v<T>)
-          ERROR_LOG("Unexpected non-float value in {}", key);
-        else if constexpr (std::is_integral_v<T>)
-          ERROR_LOG("Unexpected non-int value in {}", key);
-      }
-    }
-    else
-    {
-      ERROR_LOG("Unexpected empty value in {}", key);
-    }
-  }
-
-  return ret;
-}
-
-template<typename T>
-static std::optional<T> ParseOptionalTFromObject(const ryml::ConstNodeRef& object, std::string_view key,
-                                                 std::optional<T> (*from_string_function)(const char* str))
-{
-  std::optional<T> ret;
-
-  const ryml::ConstNodeRef member = object.find_child(to_csubstr(key));
-  if (member.valid())
-  {
-    const c4::csubstr val = member.val();
-    if (!val.empty())
-    {
-      ret = from_string_function(TinyString(to_stringview(val)));
-      if (!ret.has_value())
-        ERROR_LOG("Unknown value for {}: {}", key, to_stringview(val));
-    }
-    else
-    {
-      ERROR_LOG("Unexpected empty value in {}", key);
-    }
-  }
-
-  return ret;
-}
 
 void GameDatabase::EnsureLoaded()
 {
@@ -404,15 +307,6 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages)
       INFO_LOG("GameDB: Display line end offset set to {}.", settings.display_line_start_offset);
   }
-  if (display_deinterlacing_mode.has_value())
-  {
-    settings.display_deinterlacing_mode = display_deinterlacing_mode.value();
-    if (display_osd_messages)
-    {
-      INFO_LOG("GameDB: Display deinterlacing mode set to {}.",
-               Settings::GetDisplayDeinterlacingModeName(settings.display_deinterlacing_mode));
-    }
-  }
   if (dma_max_slice_ticks.has_value())
   {
     settings.dma_max_slice_ticks = dma_max_slice_ticks.value();
@@ -460,17 +354,48 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   }
 
   SmallStackString<512> messages;
-#define APPEND_MESSAGE(icon, msg)                                                                                      \
+#define APPEND_MESSAGE(msg)                                                                                            \
   do                                                                                                                   \
   {                                                                                                                    \
-    messages.append("\n  \u2022    ");                                                                                 \
+    messages.append("\n        \u2022 ");                                                                              \
     messages.append(msg);                                                                                              \
   } while (0)
+#define APPEND_MESSAGE_FMT(...)                                                                                        \
+  do                                                                                                                   \
+  {                                                                                                                    \
+    messages.append("\n        \u2022 ");                                                                              \
+    messages.append_format(__VA_ARGS__);                                                                               \
+  } while (0)
+
+  if (display_crop_mode.has_value())
+  {
+    if (display_osd_messages && settings.display_crop_mode != display_crop_mode.value())
+    {
+      APPEND_MESSAGE_FMT(TRANSLATE_FS("GameDatabase", "Display cropping set to {}."),
+                         Settings::GetDisplayCropModeDisplayName(display_crop_mode.value()));
+    }
+
+    settings.display_crop_mode = display_crop_mode.value();
+  }
+
+  // Don't set to optimal if disable-all-enhancements is enabled.
+  if (display_deinterlacing_mode.has_value() &&
+      (display_deinterlacing_mode.value() != DisplayDeinterlacingMode::Progressive ||
+       !g_settings.disable_all_enhancements))
+  {
+    if (display_osd_messages && settings.display_deinterlacing_mode != display_deinterlacing_mode.value())
+    {
+      APPEND_MESSAGE_FMT(TRANSLATE_FS("GameDatabase", "Deinterlacing set to {}."),
+                         Settings::GetDisplayDeinterlacingModeDisplayName(display_deinterlacing_mode.value()));
+    }
+
+    settings.display_deinterlacing_mode = display_deinterlacing_mode.value();
+  }
 
   if (HasTrait(Trait::ForceInterpreter))
   {
     if (display_osd_messages && settings.cpu_execution_mode != CPUExecutionMode::Interpreter)
-      APPEND_MESSAGE(ICON_FA_MICROCHIP, TRANSLATE_SV("GameDatabase", "CPU recompiler disabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "CPU recompiler disabled."));
 
     settings.cpu_execution_mode = CPUExecutionMode::Interpreter;
   }
@@ -478,7 +403,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::ForceSoftwareRenderer))
   {
     if (display_osd_messages && settings.gpu_renderer != GPURenderer::Software)
-      APPEND_MESSAGE(ICON_FA_PAINT_ROLLER, TRANSLATE_SV("GameDatabase", "Hardware rendering disabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Hardware rendering disabled."));
 
     settings.gpu_renderer = GPURenderer::Software;
   }
@@ -486,7 +411,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::ForceSoftwareRendererForReadbacks))
   {
     if (display_osd_messages && settings.gpu_renderer != GPURenderer::Software)
-      APPEND_MESSAGE(ICON_FA_MAGIC, TRANSLATE_SV("GameDatabase", "Software renderer readbacks enabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Software renderer readbacks enabled."));
 
     settings.gpu_use_software_renderer_for_readbacks = true;
   }
@@ -499,23 +424,23 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::ForceAccurateBlending))
   {
     if (display_osd_messages && !settings.IsUsingSoftwareRenderer() && !settings.gpu_accurate_blending)
-      APPEND_MESSAGE(ICON_FA_MAGIC, TRANSLATE_SV("GameDatabase", "Accurate blending enabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Accurate blending enabled."));
 
     settings.gpu_accurate_blending = true;
   }
 
-  if (HasTrait(Trait::ForceInterlacing))
+  if (HasTrait(Trait::ForceInterlacing) && settings.display_deinterlacing_mode == DisplayDeinterlacingMode::Progressive)
   {
-    if (display_osd_messages && settings.gpu_disable_interlacing)
-      APPEND_MESSAGE(ICON_FA_TV, TRANSLATE_SV("GameDatabase", "Interlaced rendering enabled."));
+    if (display_osd_messages)
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Interlaced rendering enabled."));
 
-    settings.gpu_disable_interlacing = false;
+    settings.display_deinterlacing_mode = DisplayDeinterlacingMode::Adaptive;
   }
 
   if (HasTrait(Trait::DisableTrueColor))
   {
     if (display_osd_messages && settings.gpu_true_color)
-      APPEND_MESSAGE(ICON_FA_MAGIC, TRANSLATE_SV("GameDatabase", "True color disabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "True color disabled."));
 
     settings.gpu_true_color = false;
   }
@@ -523,7 +448,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::DisableUpscaling))
   {
     if (display_osd_messages && settings.gpu_resolution_scale > 1)
-      APPEND_MESSAGE(ICON_FA_MAGIC, TRANSLATE_SV("GameDatabase", "Upscaling disabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Upscaling disabled."));
 
     settings.gpu_resolution_scale = 1;
   }
@@ -533,17 +458,27 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && (settings.gpu_texture_filter != GPUTextureFilter::Nearest ||
                                  g_settings.gpu_sprite_texture_filter != GPUTextureFilter::Nearest))
     {
-      APPEND_MESSAGE(ICON_FA_MAGIC, TRANSLATE_SV("GameDatabase", "Texture filtering disabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Texture filtering disabled."));
     }
 
     settings.gpu_texture_filter = GPUTextureFilter::Nearest;
     settings.gpu_sprite_texture_filter = GPUTextureFilter::Nearest;
   }
 
+  if (HasTrait(Trait::DisableSpriteTextureFiltering))
+  {
+    if (display_osd_messages && g_settings.gpu_sprite_texture_filter != GPUTextureFilter::Nearest)
+    {
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Sprite texture filtering disabled."));
+    }
+
+    settings.gpu_sprite_texture_filter = GPUTextureFilter::Nearest;
+  }
+
   if (HasTrait(Trait::DisableScaledDithering))
   {
     if (display_osd_messages && settings.gpu_scaled_dithering)
-      APPEND_MESSAGE(ICON_FA_MAGIC, TRANSLATE_SV("GameDatabase", "Scaled dithering."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Scaled dithering."));
 
     settings.gpu_scaled_dithering = false;
   }
@@ -551,23 +486,15 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::DisableWidescreen))
   {
     if (display_osd_messages && settings.gpu_widescreen_hack)
-      APPEND_MESSAGE(ICON_FA_TV, TRANSLATE_SV("GameDatabase", "Widescreen rendering disabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Widescreen rendering disabled."));
 
     settings.gpu_widescreen_hack = false;
-  }
-
-  if (HasTrait(Trait::DisableForceNTSCTimings))
-  {
-    if (display_osd_messages && settings.gpu_force_ntsc_timings)
-      APPEND_MESSAGE(ICON_FA_TV, TRANSLATE_SV("GameDatabase", "Force NTSC timings disabled."));
-
-    settings.gpu_force_ntsc_timings = false;
   }
 
   if (HasTrait(Trait::DisablePGXP))
   {
     if (display_osd_messages && settings.gpu_pgxp_enable)
-      APPEND_MESSAGE(ICON_FA_MAGIC, TRANSLATE_SV("GameDatabase", "PGXP geometry correction disabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP geometry correction disabled."));
 
     settings.gpu_pgxp_enable = false;
   }
@@ -575,7 +502,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::DisablePGXPCulling))
   {
     if (display_osd_messages && settings.gpu_pgxp_enable && settings.gpu_pgxp_culling)
-      APPEND_MESSAGE(ICON_FA_MAGIC, TRANSLATE_SV("GameDatabase", "PGXP culling correction disabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP culling correction disabled."));
 
     settings.gpu_pgxp_culling = false;
   }
@@ -583,7 +510,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::DisablePGXPTextureCorrection))
   {
     if (display_osd_messages && settings.gpu_pgxp_enable && settings.gpu_pgxp_texture_correction)
-      APPEND_MESSAGE(ICON_FA_MAGIC, TRANSLATE_SV("GameDatabase", "PGXP perspective correct textures disabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP perspective correct textures disabled."));
 
     settings.gpu_pgxp_texture_correction = false;
   }
@@ -593,7 +520,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_pgxp_enable && settings.gpu_pgxp_texture_correction &&
         settings.gpu_pgxp_color_correction)
     {
-      APPEND_MESSAGE(ICON_FA_MAGIC, TRANSLATE_SV("GameDatabase", "PGXP perspective correct colors disabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP perspective correct colors disabled."));
     }
 
     settings.gpu_pgxp_color_correction = false;
@@ -602,7 +529,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::DisablePGXPPreserveProjFP))
   {
     if (display_osd_messages && settings.gpu_pgxp_enable && settings.gpu_pgxp_preserve_proj_fp)
-      APPEND_MESSAGE(ICON_FA_MAGIC, TRANSLATE_SV("GameDatabase", "PGXP preserve projection precision disabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP preserve projection precision disabled."));
 
     settings.gpu_pgxp_preserve_proj_fp = false;
   }
@@ -610,14 +537,14 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::ForcePGXPVertexCache))
   {
     if (display_osd_messages && settings.gpu_pgxp_enable && !settings.gpu_pgxp_vertex_cache)
-      APPEND_MESSAGE(ICON_FA_MAGIC, TRANSLATE_SV("GameDatabase", "PGXP vertex cache enabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP vertex cache enabled."));
 
     settings.gpu_pgxp_vertex_cache = settings.gpu_pgxp_enable;
   }
   else if (settings.gpu_pgxp_enable && settings.gpu_pgxp_vertex_cache)
   {
-    Host::AddIconOSDMessage(
-      "gamedb_force_pgxp_vertex_cache", ICON_FA_EXCLAMATION_TRIANGLE,
+    Host::AddIconOSDWarning(
+      "gamedb_force_pgxp_vertex_cache", ICON_EMOJI_WARNING,
       TRANSLATE_STR(
         "GameDatabase",
         "PGXP Vertex Cache is enabled, but it is not required for this game. This may cause rendering errors."),
@@ -629,13 +556,12 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_pgxp_enable && !settings.gpu_pgxp_cpu)
     {
 #ifndef __ANDROID__
-      APPEND_MESSAGE(ICON_FA_MICROCHIP, TRANSLATE_SV("GameDatabase", "PGXP CPU mode enabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP CPU mode enabled."));
 #else
-      Host::AddIconOSDMessage(
-        "gamedb_force_pgxp_cpu", ICON_FA_MICROCHIP,
-        "This game requires PGXP CPU mode, which increases system requirements.\n" ICON_FA_EXCLAMATION_TRIANGLE
-        "  If the game runs too slow, disable PGXP for this game.",
-        Host::OSD_WARNING_DURATION);
+      Host::AddIconOSDWarning("gamedb_force_pgxp_cpu", ICON_EMOJI_WARNING,
+                              "This game requires PGXP CPU mode, which increases system requirements.\n"
+                              "      If the game runs too slow, disable PGXP for this game.",
+                              Host::OSD_WARNING_DURATION);
 #endif
     }
 
@@ -643,8 +569,8 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   }
   else if (settings.UsingPGXPCPUMode())
   {
-    Host::AddIconOSDMessage(
-      "gamedb_force_pgxp_cpu", ICON_FA_MICROCHIP,
+    Host::AddIconOSDWarning(
+      "gamedb_force_pgxp_cpu", ICON_EMOJI_WARNING,
       TRANSLATE_STR("GameDatabase",
                     "PGXP CPU mode is enabled, but it is not required for this game. This may cause rendering errors."),
       Host::OSD_WARNING_DURATION);
@@ -653,7 +579,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::DisablePGXPDepthBuffer))
   {
     if (display_osd_messages && settings.gpu_pgxp_enable && settings.gpu_pgxp_depth_buffer)
-      APPEND_MESSAGE(ICON_FA_MAGIC, TRANSLATE_SV("GameDatabase", "PGXP depth buffer disabled."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP depth buffer disabled."));
 
     settings.gpu_pgxp_depth_buffer = false;
   }
@@ -661,7 +587,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::DisablePGXPOn2DPolygons))
   {
     if (display_osd_messages && settings.gpu_pgxp_enable && !settings.gpu_pgxp_disable_2d)
-      APPEND_MESSAGE(ICON_FA_MICROCHIP, TRANSLATE_SV("GameDatabase", "PGXP disabled on 2D polygons."));
+      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP disabled on 2D polygons."));
 
     g_settings.gpu_pgxp_disable_2d = true;
   }
@@ -687,12 +613,13 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (!messages.empty())
   {
     Host::AddIconOSDMessage(
-      "GameDBCompatibility", ICON_FA_MICROCHIP,
-      fmt::format("{}{}", TRANSLATE_SV("GameDatabase", "Compatibility settings for this game have been applied:"),
+      "GameDBCompatibility", ICON_EMOJI_INFORMATION,
+      fmt::format("{}{}", TRANSLATE_SV("GameDatabase", "Compatibility settings for this game have been applied."),
                   messages.view()),
       Host::OSD_WARNING_DURATION);
   }
 
+#undef APPEND_MESSAGE_FMT
 #undef APPEND_MESSAGE
 
 #define BIT_FOR(ctype) (static_cast<u16>(1) << static_cast<u32>(ctype))
@@ -712,7 +639,6 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
       if (ctype == ControllerType::AnalogController &&
           (supported_controllers & BIT_FOR(ControllerType::DigitalController)) != 0)
       {
-        settings.controller_disable_analog_mode_forcing = true;
         continue;
       }
 
@@ -842,6 +768,8 @@ std::string GameDatabase::Entry::GenerateCompatibilityReport() const
                        display_line_start_offset);
   AppendIntegerSetting(ret, settings_heading, TRANSLATE_SV("GameDatabase", "Display Line End Offset"),
                        display_line_end_offset);
+  AppendEnumSetting(ret, settings_heading, TRANSLATE_SV("GameDatabase", "Display Crop Mode"),
+                    &Settings::GetDisplayCropModeDisplayName, display_crop_mode);
   AppendEnumSetting(ret, settings_heading, TRANSLATE_SV("GameDatabase", "Display Deinterlacing Mode"),
                     &Settings::GetDisplayDeinterlacingModeDisplayName, display_deinterlacing_mode);
   AppendIntegerSetting(ret, settings_heading, TRANSLATE_SV("GameDatabase", "DMA Max Slice Ticks"), dma_max_slice_ticks);
@@ -919,7 +847,7 @@ bool GameDatabase::LoadFromCache()
         !reader.Read(bits.data(), num_bytes) || !reader.ReadOptionalT(&entry.display_active_start_offset) ||
         !reader.ReadOptionalT(&entry.display_active_end_offset) ||
         !reader.ReadOptionalT(&entry.display_line_start_offset) ||
-        !reader.ReadOptionalT(&entry.display_line_end_offset) ||
+        !reader.ReadOptionalT(&entry.display_line_end_offset) || !reader.ReadOptionalT(&entry.display_crop_mode) ||
         !reader.ReadOptionalT(&entry.display_deinterlacing_mode) || !reader.ReadOptionalT(&entry.dma_max_slice_ticks) ||
         !reader.ReadOptionalT(&entry.dma_halt_ticks) || !reader.ReadOptionalT(&entry.gpu_fifo_size) ||
         !reader.ReadOptionalT(&entry.gpu_max_run_ahead) || !reader.ReadOptionalT(&entry.gpu_pgxp_tolerance) ||
@@ -973,7 +901,7 @@ bool GameDatabase::SaveToCache()
   const u64 gamedb_ts = Host::GetResourceFileTimestamp("gamedb.yaml", false).value_or(0);
 
   Error error;
-  FileSystem::AtomicRenamedFile file = FileSystem::CreateAtomicRenamedFile(GetCacheFile(), "wb", &error);
+  FileSystem::AtomicRenamedFile file = FileSystem::CreateAtomicRenamedFile(GetCacheFile(), &error);
   if (!file)
   {
     ERROR_LOG("Failed to open cache file for writing: {}", error.GetDescription());
@@ -1020,6 +948,7 @@ bool GameDatabase::SaveToCache()
     writer.WriteOptionalT(entry.display_active_end_offset);
     writer.WriteOptionalT(entry.display_line_start_offset);
     writer.WriteOptionalT(entry.display_line_end_offset);
+    writer.WriteOptionalT(entry.display_crop_mode);
     writer.WriteOptionalT(entry.display_deinterlacing_mode);
     writer.WriteOptionalT(entry.dma_max_slice_ticks);
     writer.WriteOptionalT(entry.dma_halt_ticks);
@@ -1070,7 +999,7 @@ bool GameDatabase::LoadGameDBYaml()
   const ryml::ConstNodeRef root = tree.rootref();
   s_entries.reserve(root.num_children());
 
-  for (const ryml::ConstNodeRef& current : root.children())
+  for (const ryml::ConstNodeRef& current : root.cchildren())
   {
     // TODO: binary sort
     const u32 index = static_cast<u32>(s_entries.size());
@@ -1137,7 +1066,7 @@ bool GameDatabase::ParseYamlEntry(Entry* entry, const ryml::ConstNodeRef& value)
       controllers.valid() && controllers.has_children())
   {
     bool first = true;
-    for (const ryml::ConstNodeRef& controller : controllers.children())
+    for (const ryml::ConstNodeRef& controller : controllers.cchildren())
     {
       const std::string_view controller_str = to_stringview(controller.val());
       if (controller_str.empty())
@@ -1190,7 +1119,7 @@ bool GameDatabase::ParseYamlEntry(Entry* entry, const ryml::ConstNodeRef& value)
 
   if (const ryml::ConstNodeRef traits = value.find_child(to_csubstr("traits")); traits.valid() && traits.has_children())
   {
-    for (const ryml::ConstNodeRef& trait : traits.children())
+    for (const ryml::ConstNodeRef& trait : traits.cchildren())
     {
       const std::string_view trait_str = to_stringview(trait.val());
       if (trait_str.empty())
@@ -1232,6 +1161,8 @@ bool GameDatabase::ParseYamlEntry(Entry* entry, const ryml::ConstNodeRef& value)
     entry->display_active_end_offset = GetOptionalTFromObject<s16>(settings, "displayActiveEndOffset");
     entry->display_line_start_offset = GetOptionalTFromObject<s8>(settings, "displayLineStartOffset");
     entry->display_line_end_offset = GetOptionalTFromObject<s8>(settings, "displayLineEndOffset");
+    entry->display_crop_mode =
+      ParseOptionalTFromObject<DisplayCropMode>(settings, "displayCropMode", &Settings::ParseDisplayCropMode);
     entry->display_deinterlacing_mode = ParseOptionalTFromObject<DisplayDeinterlacingMode>(
       settings, "displayDeinterlacingMode", &Settings::ParseDisplayDeinterlacingMode);
     entry->dma_max_slice_ticks = GetOptionalTFromObject<u32>(settings, "dmaMaxSliceTicks");
@@ -1346,7 +1277,7 @@ bool GameDatabase::LoadTrackHashes()
   s_track_hashes_map = {};
 
   size_t serials = 0;
-  for (const ryml::ConstNodeRef& current : root.children())
+  for (const ryml::ConstNodeRef& current : root.cchildren())
   {
     const std::string_view serial = to_stringview(current.key());
     if (serial.empty() || !current.has_children())
@@ -1363,7 +1294,7 @@ bool GameDatabase::LoadTrackHashes()
     }
 
     u32 revision = 0;
-    for (const ryml::ConstNodeRef& track_revisions : track_data.children())
+    for (const ryml::ConstNodeRef& track_revisions : track_data.cchildren())
     {
       const ryml::ConstNodeRef tracks = track_revisions.find_child(to_csubstr("tracks"));
       if (!tracks.valid() || !tracks.has_children())

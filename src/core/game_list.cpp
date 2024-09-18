@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "game_list.h"
 #include "bios.h"
@@ -15,7 +15,6 @@
 #include "util/image.h"
 #include "util/ini_settings_interface.h"
 
-#include "common/assert.h"
 #include "common/binary_reader_writer.h"
 #include "common/error.h"
 #include "common/file_system.h"
@@ -24,10 +23,12 @@
 #include "common/path.h"
 #include "common/progress_callback.h"
 #include "common/string_util.h"
+#include "common/timer.h"
+
+#include "fmt/format.h"
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <ctime>
 #include <string_view>
 #include <type_traits>
@@ -105,7 +106,7 @@ static bool ScanFile(std::string path, std::time_t timestamp, std::unique_lock<s
 static bool LoadOrInitializeCache(std::FILE* fp, bool invalidate_cache);
 static bool LoadEntriesFromCache(BinaryFileReader& reader);
 static bool WriteEntryToCache(const Entry* entry, BinaryFileWriter& writer);
-static void CreateDiscSetEntries(const PlayedTimeMap& played_time_map);
+static void CreateDiscSetEntries(const std::vector<std::string>& excluded_paths, const PlayedTimeMap& played_time_map);
 
 static std::string GetPlayedTimeFile();
 static bool ParsePlayedTimeLine(char* line, std::string& serial, PlayedTimeEntry& entry);
@@ -130,17 +131,26 @@ static bool s_game_list_loaded = false;
 
 const char* GameList::GetEntryTypeName(EntryType type)
 {
-  static std::array<const char*, static_cast<int>(EntryType::Count)> names = {
-    {"Disc", "DiscSet", "PSExe", "Playlist", "PSF"}};
-  return names[static_cast<int>(type)];
+  static std::array<const char*, static_cast<int>(EntryType::Count)> names = {{
+    "Disc",
+    "DiscSet",
+    "PSExe",
+    "Playlist",
+    "PSF",
+  }};
+  return names[static_cast<size_t>(type)];
 }
 
 const char* GameList::GetEntryTypeDisplayName(EntryType type)
 {
-  static std::array<const char*, static_cast<int>(EntryType::Count)> names = {
-    {TRANSLATE_NOOP("GameList", "Disc"), TRANSLATE_NOOP("GameList", "Disc Set"), TRANSLATE_NOOP("GameList", "PS-EXE"),
-     TRANSLATE_NOOP("GameList", "Playlist"), TRANSLATE_NOOP("GameList", "PSF")}};
-  return Host::TranslateToCString("GameList", names[static_cast<int>(type)]);
+  static std::array<const char*, static_cast<int>(EntryType::Count)> names = {{
+    TRANSLATE_DISAMBIG_NOOP("GameList", "Disc", "EntryType"),
+    TRANSLATE_DISAMBIG_NOOP("GameList", "Disc Set", "EntryType"),
+    TRANSLATE_DISAMBIG_NOOP("GameList", "PS-EXE", "EntryType"),
+    TRANSLATE_DISAMBIG_NOOP("GameList", "Playlist", "EntryType"),
+    TRANSLATE_DISAMBIG_NOOP("GameList", "PSF", "EntryType"),
+  }};
+  return Host::TranslateToCString("GameList", names[static_cast<size_t>(type)], "EntryType");
 }
 
 bool GameList::IsGameListLoaded()
@@ -820,7 +830,7 @@ void GameList::Refresh(bool invalidate_cache, bool only_cache, ProgressCallback*
   s_cache_map.clear();
 
   // merge multi-disc games
-  CreateDiscSetEntries(played_time);
+  CreateDiscSetEntries(excluded_paths, played_time);
 }
 
 GameList::EntryList GameList::TakeEntryList()
@@ -830,7 +840,8 @@ GameList::EntryList GameList::TakeEntryList()
   return ret;
 }
 
-void GameList::CreateDiscSetEntries(const PlayedTimeMap& played_time_map)
+void GameList::CreateDiscSetEntries(const std::vector<std::string>& excluded_paths,
+                                    const PlayedTimeMap& played_time_map)
 {
   std::unique_lock lock(s_mutex);
 
@@ -928,8 +939,9 @@ void GameList::CreateDiscSetEntries(const PlayedTimeMap& played_time_map)
 
     DEV_LOG("Created disc set {} from {} entries", disc_set_name, num_parts);
 
-    // entry is done :)
-    s_entries.push_back(std::move(set_entry));
+    // we have to do the exclusion check at the end, because otherwise the individual discs get added
+    if (!IsPathExcluded(excluded_paths, disc_set_name))
+      s_entries.push_back(std::move(set_entry));
   }
 }
 

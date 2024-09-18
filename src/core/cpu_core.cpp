@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cpu_core.h"
 #include "bus.h"
@@ -22,12 +22,21 @@
 #include "common/file_system.h"
 #include "common/log.h"
 
+#include "fmt/format.h"
+
 #include <cstdio>
 
 Log_SetChannel(CPU::Core);
 
 namespace CPU {
-static bool ShouldUseInterpreter();
+enum class ExecutionBreakType
+{
+  None,
+  ExecuteOneInstruction,
+  SingleStep,
+  Breakpoint,
+};
+
 static void UpdateLoadDelay();
 static void Branch(u32 target);
 static void FlushLoadDelay();
@@ -66,6 +75,8 @@ static void LogInstruction(u32 bits, u32 pc, bool regs);
 static void HandleWriteSyscall();
 static void HandlePutcSyscall();
 static void HandlePutsSyscall();
+
+static void CheckForExecutionModeChange();
 [[noreturn]] static void ExecuteInterpreter();
 
 template<PGXPMode pgxp_mode, bool debug>
@@ -102,8 +113,8 @@ static constexpr u32 INVALID_BREAKPOINT_PC = UINT32_C(0xFFFFFFFF);
 static std::array<std::vector<Breakpoint>, static_cast<u32>(BreakpointType::Count)> s_breakpoints;
 static u32 s_breakpoint_counter = 1;
 static u32 s_last_breakpoint_check_pc = INVALID_BREAKPOINT_PC;
-static bool s_single_step = false;
-static bool s_break_after_instruction = false;
+static CPUExecutionMode s_current_execution_mode = CPUExecutionMode::Interpreter;
+static ExecutionBreakType s_break_type = ExecutionBreakType::None;
 } // namespace CPU
 
 bool CPU::IsTraceEnabled()
@@ -161,14 +172,14 @@ void CPU::Initialize()
   // From nocash spec.
   g_state.cop0_regs.PRID = UINT32_C(0x00000002);
 
+  s_current_execution_mode = g_settings.cpu_execution_mode;
   g_state.using_debug_dispatcher = false;
-  g_state.using_interpreter = ShouldUseInterpreter();
+  g_state.using_interpreter = (s_current_execution_mode == CPUExecutionMode::Interpreter);
   for (BreakpointList& bps : s_breakpoints)
     bps.clear();
   s_breakpoint_counter = 1;
   s_last_breakpoint_check_pc = INVALID_BREAKPOINT_PC;
-  s_single_step = false;
-  s_break_after_instruction = false;
+  s_break_type = ExecutionBreakType::None;
 
   UpdateMemoryPointers();
   UpdateDebugDispatcherFlag();
@@ -278,31 +289,21 @@ bool CPU::DoState(StateWrapper& sw)
     sw.Do(&g_state.icache_data);
   }
 
-  bool using_interpreter = g_state.using_interpreter;
-  sw.DoEx(&using_interpreter, 67, g_state.using_interpreter);
+  sw.DoEx(&g_state.using_interpreter, 67, g_state.using_interpreter);
 
   if (sw.IsReading())
   {
-    // Since the recompilers do not use npc/next_instruction, and the icache emulation doesn't actually fill the data,
-    // only the tags, if we save state with the recompiler, then load state with the interpreter, we're most likely
-    // going to crash. Clear both in the case that we are switching.
-    if (using_interpreter != g_state.using_interpreter)
-    {
-      WARNING_LOG("Current execution mode does not match save state. Resetting icache state.");
-      ExecutionModeChanged();
-    }
-
-    UpdateMemoryPointers();
+    // Trigger an execution mode change if the state was/wasn't using the interpreter.
+    s_current_execution_mode =
+      g_state.using_interpreter ?
+        CPUExecutionMode::Interpreter :
+        ((g_settings.cpu_execution_mode == CPUExecutionMode::Interpreter) ? CPUExecutionMode::CachedInterpreter :
+                                                                            g_settings.cpu_execution_mode);
     g_state.gte_completion_tick = 0;
+    UpdateMemoryPointers();
   }
 
   return !sw.HasError();
-}
-
-ALWAYS_INLINE_RELEASE bool CPU::ShouldUseInterpreter()
-{
-  // Currently, any breakpoints require the interpreter.
-  return (g_settings.cpu_execution_mode == CPUExecutionMode::Interpreter || g_state.using_debug_dispatcher);
 }
 
 void CPU::SetPC(u32 new_pc)
@@ -994,7 +995,7 @@ restart_instruction:
           WriteReg(inst.r.rd, rdVal);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_SLL(inst.bits, rtVal);
+            PGXP::CPU_SLL(inst, rtVal);
         }
         break;
 
@@ -1005,7 +1006,7 @@ restart_instruction:
           WriteReg(inst.r.rd, rdVal);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_SRL(inst.bits, rtVal);
+            PGXP::CPU_SRL(inst, rtVal);
         }
         break;
 
@@ -1016,7 +1017,7 @@ restart_instruction:
           WriteReg(inst.r.rd, rdVal);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_SRA(inst.bits, rtVal);
+            PGXP::CPU_SRA(inst, rtVal);
         }
         break;
 
@@ -1026,7 +1027,7 @@ restart_instruction:
           const u32 shamt = ReadReg(inst.r.rs) & UINT32_C(0x1F);
           const u32 rdVal = rtVal << shamt;
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_SLLV(inst.bits, rtVal, shamt);
+            PGXP::CPU_SLLV(inst, rtVal, shamt);
 
           WriteReg(inst.r.rd, rdVal);
         }
@@ -1040,7 +1041,7 @@ restart_instruction:
           WriteReg(inst.r.rd, rdVal);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_SRLV(inst.bits, rtVal, shamt);
+            PGXP::CPU_SRLV(inst, rtVal, shamt);
         }
         break;
 
@@ -1052,7 +1053,7 @@ restart_instruction:
           WriteReg(inst.r.rd, rdVal);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_SRAV(inst.bits, rtVal, shamt);
+            PGXP::CPU_SRAV(inst, rtVal, shamt);
         }
         break;
 
@@ -1064,7 +1065,7 @@ restart_instruction:
           WriteReg(inst.r.rd, new_value);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_AND_(inst.bits, rsVal, rtVal);
+            PGXP::CPU_AND_(inst, rsVal, rtVal);
         }
         break;
 
@@ -1076,7 +1077,7 @@ restart_instruction:
           WriteReg(inst.r.rd, new_value);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_OR_(inst.bits, rsVal, rtVal);
+            PGXP::CPU_OR_(inst, rsVal, rtVal);
           else if constexpr (pgxp_mode >= PGXPMode::Memory)
             PGXP::TryMove(inst.r.rd, inst.r.rs, inst.r.rt);
         }
@@ -1090,7 +1091,7 @@ restart_instruction:
           WriteReg(inst.r.rd, new_value);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_XOR_(inst.bits, rsVal, rtVal);
+            PGXP::CPU_XOR_(inst, rsVal, rtVal);
           else if constexpr (pgxp_mode >= PGXPMode::Memory)
             PGXP::TryMove(inst.r.rd, inst.r.rs, inst.r.rt);
         }
@@ -1104,7 +1105,7 @@ restart_instruction:
           WriteReg(inst.r.rd, new_value);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_NOR(inst.bits, rsVal, rtVal);
+            PGXP::CPU_NOR(inst, rsVal, rtVal);
         }
         break;
 
@@ -1122,7 +1123,7 @@ restart_instruction:
           WriteReg(inst.r.rd, rdVal);
 
           if constexpr (pgxp_mode == PGXPMode::CPU)
-            PGXP::CPU_ADD(inst.bits, rsVal, rtVal);
+            PGXP::CPU_ADD(inst, rsVal, rtVal);
           else if constexpr (pgxp_mode >= PGXPMode::Memory)
             PGXP::TryMove(inst.r.rd, inst.r.rs, inst.r.rt);
         }
@@ -1136,7 +1137,7 @@ restart_instruction:
           WriteReg(inst.r.rd, rdVal);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_ADD(inst.bits, rsVal, rtVal);
+            PGXP::CPU_ADD(inst, rsVal, rtVal);
           else if constexpr (pgxp_mode >= PGXPMode::Memory)
             PGXP::TryMove(inst.r.rd, inst.r.rs, inst.r.rt);
         }
@@ -1156,7 +1157,7 @@ restart_instruction:
           WriteReg(inst.r.rd, rdVal);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_SUB(inst.bits, rsVal, rtVal);
+            PGXP::CPU_SUB(inst, rsVal, rtVal);
         }
         break;
 
@@ -1168,7 +1169,7 @@ restart_instruction:
           WriteReg(inst.r.rd, rdVal);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_SUB(inst.bits, rsVal, rtVal);
+            PGXP::CPU_SUB(inst, rsVal, rtVal);
         }
         break;
 
@@ -1180,7 +1181,7 @@ restart_instruction:
           WriteReg(inst.r.rd, result);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_SLT(inst.bits, rsVal, rtVal);
+            PGXP::CPU_SLT(inst, rsVal, rtVal);
         }
         break;
 
@@ -1192,7 +1193,7 @@ restart_instruction:
           WriteReg(inst.r.rd, result);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_SLTU(inst.bits, rsVal, rtVal);
+            PGXP::CPU_SLTU(inst, rsVal, rtVal);
         }
         break;
 
@@ -1247,7 +1248,7 @@ restart_instruction:
           g_state.regs.lo = Truncate32(result);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_MULT(inst.bits, lhs, rhs);
+            PGXP::CPU_MULT(inst, lhs, rhs);
         }
         break;
 
@@ -1261,7 +1262,7 @@ restart_instruction:
           g_state.regs.lo = Truncate32(result);
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_MULTU(inst.bits, lhs, rhs);
+            PGXP::CPU_MULTU(inst, lhs, rhs);
         }
         break;
 
@@ -1289,7 +1290,7 @@ restart_instruction:
           }
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_DIV(inst.bits, num, denom);
+            PGXP::CPU_DIV(inst, num, denom);
         }
         break;
 
@@ -1311,7 +1312,7 @@ restart_instruction:
           }
 
           if constexpr (pgxp_mode >= PGXPMode::CPU)
-            PGXP::CPU_DIVU(inst.bits, num, denom);
+            PGXP::CPU_DIVU(inst, num, denom);
         }
         break;
 
@@ -1362,7 +1363,7 @@ restart_instruction:
       WriteReg(inst.i.rt, value);
 
       if constexpr (pgxp_mode >= PGXPMode::CPU)
-        PGXP::CPU_LUI(inst.bits);
+        PGXP::CPU_LUI(inst);
     }
     break;
 
@@ -1373,7 +1374,7 @@ restart_instruction:
       WriteReg(inst.i.rt, new_value);
 
       if constexpr (pgxp_mode >= PGXPMode::CPU)
-        PGXP::CPU_ANDI(inst.bits, rsVal);
+        PGXP::CPU_ANDI(inst, rsVal);
     }
     break;
 
@@ -1385,7 +1386,7 @@ restart_instruction:
       WriteReg(inst.i.rt, rtVal);
 
       if constexpr (pgxp_mode >= PGXPMode::CPU)
-        PGXP::CPU_ORI(inst.bits, rsVal);
+        PGXP::CPU_ORI(inst, rsVal);
       else if constexpr (pgxp_mode >= PGXPMode::Memory)
         PGXP::TryMoveImm(inst.r.rd, inst.r.rs, imm);
     }
@@ -1399,7 +1400,7 @@ restart_instruction:
       WriteReg(inst.i.rt, new_value);
 
       if constexpr (pgxp_mode >= PGXPMode::CPU)
-        PGXP::CPU_XORI(inst.bits, rsVal);
+        PGXP::CPU_XORI(inst, rsVal);
       else if constexpr (pgxp_mode >= PGXPMode::Memory)
         PGXP::TryMoveImm(inst.r.rd, inst.r.rs, imm);
     }
@@ -1419,7 +1420,7 @@ restart_instruction:
       WriteReg(inst.i.rt, rtVal);
 
       if constexpr (pgxp_mode >= PGXPMode::CPU)
-        PGXP::CPU_ADDI(inst.bits, rsVal);
+        PGXP::CPU_ADDI(inst, rsVal);
       else if constexpr (pgxp_mode >= PGXPMode::Memory)
         PGXP::TryMoveImm(inst.r.rd, inst.r.rs, imm);
     }
@@ -1433,7 +1434,7 @@ restart_instruction:
       WriteReg(inst.i.rt, rtVal);
 
       if constexpr (pgxp_mode >= PGXPMode::CPU)
-        PGXP::CPU_ADDI(inst.bits, rsVal);
+        PGXP::CPU_ADDI(inst, rsVal);
       else if constexpr (pgxp_mode >= PGXPMode::Memory)
         PGXP::TryMoveImm(inst.r.rd, inst.r.rs, imm);
     }
@@ -1446,7 +1447,7 @@ restart_instruction:
       WriteReg(inst.i.rt, result);
 
       if constexpr (pgxp_mode >= PGXPMode::CPU)
-        PGXP::CPU_SLTI(inst.bits, rsVal);
+        PGXP::CPU_SLTI(inst, rsVal);
     }
     break;
 
@@ -1456,7 +1457,7 @@ restart_instruction:
       WriteReg(inst.i.rt, result);
 
       if constexpr (pgxp_mode >= PGXPMode::CPU)
-        PGXP::CPU_SLTIU(inst.bits, ReadReg(inst.i.rs));
+        PGXP::CPU_SLTIU(inst, ReadReg(inst.i.rs));
     }
     break;
 
@@ -1478,7 +1479,7 @@ restart_instruction:
       WriteRegDelayed(inst.i.rt, sxvalue);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_LBx(inst.bits, addr, sxvalue);
+        PGXP::CPU_LBx(inst, addr, sxvalue);
     }
     break;
 
@@ -1499,7 +1500,7 @@ restart_instruction:
       WriteRegDelayed(inst.i.rt, sxvalue);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_LH(inst.bits, addr, sxvalue);
+        PGXP::CPU_LH(inst, addr, sxvalue);
     }
     break;
 
@@ -1519,7 +1520,7 @@ restart_instruction:
       WriteRegDelayed(inst.i.rt, value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_LW(inst.bits, addr, value);
+        PGXP::CPU_LW(inst, addr, value);
     }
     break;
 
@@ -1540,7 +1541,7 @@ restart_instruction:
       WriteRegDelayed(inst.i.rt, zxvalue);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_LBx(inst.bits, addr, zxvalue);
+        PGXP::CPU_LBx(inst, addr, zxvalue);
     }
     break;
 
@@ -1561,7 +1562,7 @@ restart_instruction:
       WriteRegDelayed(inst.i.rt, zxvalue);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_LHU(inst.bits, addr, zxvalue);
+        PGXP::CPU_LHU(inst, addr, zxvalue);
     }
     break;
 
@@ -1598,7 +1599,7 @@ restart_instruction:
       WriteRegDelayed(inst.i.rt, new_value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_LW(inst.bits, addr, new_value);
+        PGXP::CPU_LW(inst, addr, new_value);
     }
     break;
 
@@ -1615,7 +1616,7 @@ restart_instruction:
       WriteMemoryByte(addr, value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_SB(inst.bits, addr, value);
+        PGXP::CPU_SB(inst, addr, value);
     }
     break;
 
@@ -1632,7 +1633,7 @@ restart_instruction:
       WriteMemoryHalfWord(addr, value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_SH(inst.bits, addr, value);
+        PGXP::CPU_SH(inst, addr, value);
     }
     break;
 
@@ -1649,7 +1650,7 @@ restart_instruction:
       WriteMemoryWord(addr, value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_SW(inst.bits, addr, value);
+        PGXP::CPU_SW(inst, addr, value);
     }
     break;
 
@@ -1685,7 +1686,7 @@ restart_instruction:
       WriteMemoryWord(aligned_addr, new_value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_SW(inst.bits, aligned_addr, new_value);
+        PGXP::CPU_SW(inst, aligned_addr, new_value);
     }
     break;
 
@@ -1779,7 +1780,7 @@ restart_instruction:
             WriteRegDelayed(inst.r.rt, value);
 
             if constexpr (pgxp_mode == PGXPMode::CPU)
-              PGXP::CPU_MFC0(inst.bits, value);
+              PGXP::CPU_MFC0(inst, value);
           }
           break;
 
@@ -1789,7 +1790,7 @@ restart_instruction:
             WriteCop0Reg(static_cast<Cop0Reg>(inst.r.rd.GetValue()), rtVal);
 
             if constexpr (pgxp_mode == PGXPMode::CPU)
-              PGXP::CPU_MTC0(inst.bits, ReadCop0Reg(static_cast<Cop0Reg>(inst.r.rd.GetValue())), rtVal);
+              PGXP::CPU_MTC0(inst, ReadCop0Reg(static_cast<Cop0Reg>(inst.r.rd.GetValue())), rtVal);
           }
           break;
 
@@ -1850,7 +1851,7 @@ restart_instruction:
             WriteRegDelayed(inst.r.rt, value);
 
             if constexpr (pgxp_mode >= PGXPMode::Memory)
-              PGXP::CPU_MFC2(inst.bits, value);
+              PGXP::CPU_MFC2(inst, value);
           }
           break;
 
@@ -1860,7 +1861,7 @@ restart_instruction:
             GTE::WriteRegister(static_cast<u32>(inst.r.rd.GetValue()) + 32, value);
 
             if constexpr (pgxp_mode >= PGXPMode::Memory)
-              PGXP::CPU_MTC2(inst.bits, value);
+              PGXP::CPU_MTC2(inst, value);
           }
           break;
 
@@ -1870,7 +1871,7 @@ restart_instruction:
             WriteRegDelayed(inst.r.rt, value);
 
             if constexpr (pgxp_mode >= PGXPMode::Memory)
-              PGXP::CPU_MFC2(inst.bits, value);
+              PGXP::CPU_MFC2(inst, value);
           }
           break;
 
@@ -1880,7 +1881,7 @@ restart_instruction:
             GTE::WriteRegister(static_cast<u32>(inst.r.rd.GetValue()), value);
 
             if constexpr (pgxp_mode >= PGXPMode::Memory)
-              PGXP::CPU_MTC2(inst.bits, value);
+              PGXP::CPU_MTC2(inst, value);
           }
           break;
 
@@ -1915,7 +1916,7 @@ restart_instruction:
       GTE::WriteRegister(ZeroExtend32(static_cast<u8>(inst.i.rt.GetValue())), value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_LWC2(inst.bits, addr, value);
+        PGXP::CPU_LWC2(inst, addr, value);
     }
     break;
 
@@ -1935,7 +1936,7 @@ restart_instruction:
       WriteMemoryWord(addr, value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_SWC2(inst.bits, addr, value);
+        PGXP::CPU_SWC2(inst, addr, value);
     }
     break;
 
@@ -1992,9 +1993,14 @@ void CPU::DispatchInterrupt()
   TimingEvents::UpdateCPUDowncount();
 }
 
+CPUExecutionMode CPU::GetCurrentExecutionMode()
+{
+  return s_current_execution_mode;
+}
+
 bool CPU::UpdateDebugDispatcherFlag()
 {
-  const bool has_any_breakpoints = HasAnyBreakpoints() || s_single_step;
+  const bool has_any_breakpoints = (HasAnyBreakpoints() || s_break_type == ExecutionBreakType::SingleStep);
 
   const auto& dcic = g_state.cop0_regs.dcic;
   const bool has_cop0_breakpoints = dcic.super_master_enable_1 && dcic.super_master_enable_2 &&
@@ -2008,21 +2014,80 @@ bool CPU::UpdateDebugDispatcherFlag()
 
   DEV_LOG("{} debug dispatcher", use_debug_dispatcher ? "Now using" : "No longer using");
   g_state.using_debug_dispatcher = use_debug_dispatcher;
-
-  // Switching to interpreter?
-  if (g_state.using_interpreter != ShouldUseInterpreter())
-    ExecutionModeChanged();
-
   return true;
 }
 
-void CPU::ExitExecution()
+void CPU::CheckForExecutionModeChange()
+{
+  // Currently, any breakpoints require the interpreter.
+  const CPUExecutionMode new_execution_mode =
+    (g_state.using_debug_dispatcher ? CPUExecutionMode::Interpreter : g_settings.cpu_execution_mode);
+  if (s_current_execution_mode == new_execution_mode) [[likely]]
+  {
+    DebugAssert(g_state.using_interpreter == (s_current_execution_mode == CPUExecutionMode::Interpreter));
+    return;
+  }
+
+  WARNING_LOG("Execution mode changed from {} to {}", Settings::GetCPUExecutionModeName(s_current_execution_mode),
+              Settings::GetCPUExecutionModeName(new_execution_mode));
+
+  const bool new_interpreter = (new_execution_mode == CPUExecutionMode::Interpreter);
+  if (g_state.using_interpreter != new_interpreter)
+  {
+    // Have to clear out the icache too, only the tags are valid in the recs.
+    ClearICache();
+    g_state.bus_error = false;
+
+    if (new_interpreter)
+    {
+      // Switching to interpreter. Set up the pipeline.
+      // We'll also need to fetch the next instruction to execute.
+      if (!SafeReadInstruction(g_state.pc, &g_state.next_instruction.bits)) [[unlikely]]
+      {
+        g_state.next_instruction.bits = 0;
+        ERROR_LOG("Failed to read current instruction from 0x{:08X}", g_state.pc);
+      }
+
+      g_state.npc = g_state.pc + sizeof(Instruction);
+    }
+    else
+    {
+      // Switching to recompiler. We can't start a rec block in a branch delay slot, so we need to execute the
+      // instruction if we're currently in one.
+      if (g_state.next_instruction_is_branch_delay_slot) [[unlikely]]
+      {
+        while (g_state.next_instruction_is_branch_delay_slot)
+        {
+          WARNING_LOG("EXECMODE: Executing instruction at 0x{:08X} because it is in a branch delay slot.", g_state.pc);
+          if (fastjmp_set(&s_jmp_buf) == 0)
+          {
+            s_break_type = ExecutionBreakType::ExecuteOneInstruction;
+            g_state.using_debug_dispatcher = true;
+            ExecuteInterpreter();
+          }
+        }
+
+        // Need to restart the whole process again, because the branch slot could change the debug flag.
+        UpdateDebugDispatcherFlag();
+        CheckForExecutionModeChange();
+        return;
+      }
+    }
+  }
+
+  s_current_execution_mode = new_execution_mode;
+  g_state.using_interpreter = new_interpreter;
+
+  // Wipe out code cache when switching modes.
+  if (!new_interpreter)
+    CPU::CodeCache::Reset();
+}
+
+[[noreturn]] void CPU::ExitExecution()
 {
   // can't exit while running events without messing things up
-  if (TimingEvents::IsRunningEvents())
-    TimingEvents::SetFrameDone();
-  else
-    fastjmp_jmp(&s_jmp_buf, 1);
+  DebugAssert(!TimingEvents::IsRunningEvents());
+  fastjmp_jmp(&s_jmp_buf, 1);
 }
 
 bool CPU::HasAnyBreakpoints()
@@ -2048,10 +2113,13 @@ const char* CPU::GetBreakpointTypeName(BreakpointType type)
 
 bool CPU::HasBreakpointAtAddress(BreakpointType type, VirtualMemoryAddress address)
 {
-  for (const Breakpoint& bp : GetBreakpointList(type))
+  for (Breakpoint& bp : GetBreakpointList(type))
   {
-    if (bp.address == address)
+    if (bp.enabled && (bp.address & 0x0FFFFFFFu) == (address & 0x0FFFFFFFu))
+    {
+      bp.hit_count++;
       return true;
+    }
   }
 
   return false;
@@ -2113,6 +2181,27 @@ bool CPU::AddBreakpointWithCallback(BreakpointType type, VirtualMemoryAddress ad
   GetBreakpointList(type).push_back(std::move(bp));
   if (UpdateDebugDispatcherFlag())
     System::InterruptExecution();
+  return true;
+}
+
+bool CPU::SetBreakpointEnabled(BreakpointType type, VirtualMemoryAddress address, bool enabled)
+{
+  BreakpointList& bplist = GetBreakpointList(type);
+  auto it =
+    std::find_if(bplist.begin(), bplist.end(), [address](const Breakpoint& bp) { return bp.address == address; });
+  if (it == bplist.end())
+    return false;
+
+  Host::ReportDebuggerMessage(fmt::format("{} {} breakpoint at 0x{:08X}.", enabled ? "Enabled" : "Disabled",
+                                          GetBreakpointTypeName(type), address));
+  it->enabled = enabled;
+
+  if (UpdateDebugDispatcherFlag())
+    System::InterruptExecution();
+
+  if (address == s_last_breakpoint_check_pc && !enabled)
+    s_last_breakpoint_check_pc = INVALID_BREAKPOINT_PC;
+
   return true;
 }
 
@@ -2218,7 +2307,7 @@ ALWAYS_INLINE_RELEASE bool CPU::CheckBreakpointList(BreakpointType type, Virtual
   for (size_t i = 0; i < count;)
   {
     Breakpoint& bp = bplist[i];
-    if (!bp.enabled || bp.address != address)
+    if (!bp.enabled || (bp.address & 0x0FFFFFFFu) != (address & 0x0FFFFFFFu))
     {
       i++;
       continue;
@@ -2255,8 +2344,8 @@ ALWAYS_INLINE_RELEASE bool CPU::CheckBreakpointList(BreakpointType type, Virtual
       }
       else
       {
-        Host::ReportDebuggerMessage(
-          fmt::format("Hit {} breakpoint {} at 0x{:08X}.", GetBreakpointTypeName(type), bp.number, address));
+        Host::ReportDebuggerMessage(fmt::format("Hit {} breakpoint {} at 0x{:08X}, Hit Count {}.",
+                                                GetBreakpointTypeName(type), bp.number, address, bp.hit_count));
         i++;
       }
 
@@ -2269,20 +2358,11 @@ ALWAYS_INLINE_RELEASE bool CPU::CheckBreakpointList(BreakpointType type, Virtual
 
 ALWAYS_INLINE_RELEASE void CPU::ExecutionBreakpointCheck()
 {
-  if (s_single_step) [[unlikely]]
-  {
-    // single step ignores breakpoints, since it stops anyway
-    s_single_step = false;
-    s_break_after_instruction = true;
-    Host::ReportDebuggerMessage(fmt::format("Stepped to 0x{:08X}.", g_state.npc));
-    return;
-  }
-
   if (s_breakpoints[static_cast<u32>(BreakpointType::Execute)].empty()) [[likely]]
     return;
 
   const u32 pc = g_state.pc;
-  if (pc == s_last_breakpoint_check_pc) [[unlikely]]
+  if (pc == s_last_breakpoint_check_pc || s_break_type == ExecutionBreakType::ExecuteOneInstruction) [[unlikely]]
   {
     // we don't want to trigger the same breakpoint which just paused us repeatedly.
     return;
@@ -2292,7 +2372,7 @@ ALWAYS_INLINE_RELEASE void CPU::ExecutionBreakpointCheck()
 
   if (CheckBreakpointList(BreakpointType::Execute, pc)) [[unlikely]]
   {
-    s_single_step = false;
+    s_break_type = ExecutionBreakType::None;
     ExitExecution();
   }
 }
@@ -2301,18 +2381,19 @@ template<MemoryAccessType type>
 ALWAYS_INLINE_RELEASE void CPU::MemoryBreakpointCheck(VirtualMemoryAddress address)
 {
   const BreakpointType bptype = (type == MemoryAccessType::Read) ? BreakpointType::Read : BreakpointType::Write;
-  if (CheckBreakpointList(bptype, address))
-    s_break_after_instruction = true;
+  if (CheckBreakpointList(bptype, address)) [[unlikely]]
+    s_break_type = ExecutionBreakType::Breakpoint;
 }
 
 template<PGXPMode pgxp_mode, bool debug>
 [[noreturn]] void CPU::ExecuteImpl()
 {
-  for (;;)
-  {
+  if (g_state.pending_ticks >= g_state.downcount)
     TimingEvents::RunEvents();
 
-    while (g_state.pending_ticks < g_state.downcount)
+  for (;;)
+  {
+    do
     {
       if constexpr (debug)
       {
@@ -2352,7 +2433,7 @@ template<PGXPMode pgxp_mode, bool debug>
       {
         if (g_state.m_regs.v1 != g_state.m_regs.v0)
           printf("Got %08X Expected? %08X\n", g_state.m_regs.v1, g_state.m_regs.v0);
-      }
+    }
 #endif
 
       // execute the instruction we previously fetched
@@ -2363,15 +2444,19 @@ template<PGXPMode pgxp_mode, bool debug>
 
       if constexpr (debug)
       {
-        if (s_break_after_instruction)
+        if (s_break_type != ExecutionBreakType::None) [[unlikely]]
         {
-          s_break_after_instruction = false;
-          System::PauseSystem(true);
+          const ExecutionBreakType break_type = std::exchange(s_break_type, ExecutionBreakType::None);
+          if (break_type >= ExecutionBreakType::SingleStep)
+            System::PauseSystem(true);
+
           UpdateDebugDispatcherFlag();
           ExitExecution();
         }
       }
-    }
+    } while (g_state.pending_ticks < g_state.downcount);
+
+    TimingEvents::RunEvents();
   }
 }
 
@@ -2409,6 +2494,8 @@ void CPU::ExecuteInterpreter()
 
 void CPU::Execute()
 {
+  CheckForExecutionModeChange();
+
   if (fastjmp_set(&s_jmp_buf) != 0)
     return;
 
@@ -2420,7 +2507,7 @@ void CPU::Execute()
 
 void CPU::SetSingleStepFlag()
 {
-  s_single_step = true;
+  s_break_type = ExecutionBreakType::SingleStep;
   if (UpdateDebugDispatcherFlag())
     System::InterruptExecution();
 }
@@ -2566,41 +2653,6 @@ void CPU::UpdateMemoryPointers()
 {
   g_state.memory_handlers = Bus::GetMemoryHandlers(g_state.cop0_regs.sr.Isc, g_state.cop0_regs.sr.Swc);
   g_state.fastmem_base = Bus::GetFastmemBase(g_state.cop0_regs.sr.Isc);
-}
-
-void CPU::ExecutionModeChanged()
-{
-  const bool prev_interpreter = g_state.using_interpreter;
-
-  UpdateDebugDispatcherFlag();
-
-  // Clear out bus errors in case only memory exceptions are toggled on.
-  g_state.bus_error = false;
-
-  // Have to clear out the icache too, only the tags are valid in the recs.
-  ClearICache();
-
-  // Switching to interpreter?
-  g_state.using_interpreter = ShouldUseInterpreter();
-  if (g_state.using_interpreter != prev_interpreter && !prev_interpreter)
-  {
-    // Before we return, set npc to pc so that we can switch from recs to int.
-    // We'll also need to fetch the next instruction to execute.
-    if (!SafeReadInstruction(g_state.pc, &g_state.next_instruction.bits)) [[unlikely]]
-    {
-      g_state.next_instruction.bits = 0;
-      ERROR_LOG("Failed to read current instruction from 0x{:08X}", g_state.pc);
-    }
-
-    g_state.npc = g_state.pc + sizeof(Instruction);
-  }
-
-  // Wipe out code cache when switching back to recompiler.
-  if (!g_state.using_interpreter && prev_interpreter)
-    CPU::CodeCache::Reset();
-
-  UpdateDebugDispatcherFlag();
-  System::InterruptExecution();
 }
 
 template<bool add_ticks, bool icache_read, u32 word_count, bool raise_exceptions>

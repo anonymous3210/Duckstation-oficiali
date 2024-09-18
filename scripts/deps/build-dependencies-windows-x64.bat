@@ -40,13 +40,13 @@ set "PATH=%PATH%;%INSTALLDIR%\bin"
 
 cd "%BUILDDIR%"
 
-set FREETYPE=2.13.2
-set HARFBUZZ=8.3.1
-set LIBJPEG=9f
+set FREETYPE=2.13.3
+set HARFBUZZ=9.0.0
+set LIBJPEGTURBO=3.0.3
 set LIBPNG=1643
 set QT=6.7.2
 set QTMINOR=6.7
-set SDL2=2.30.6
+set SDL2=2.30.7
 set WEBP=1.4.0
 set ZLIB=1.3.1
 set ZLIBSHORT=131
@@ -54,15 +54,18 @@ set ZSTD=1.5.6
 
 set CPUINFO=7524ad504fdcfcf75a18a133da6abd75c5d48053
 set DISCORD_RPC=144f3a3f1209994d8d9e8a87964a989cb9911c1e
-set SHADERC=feb2460bf3a504d67011246edeb810c45ea58826
+set LUNASVG=9af1ac7b90658a279b372add52d6f77a4ebb482c
+set SHADERC=3a655d0f8d3c946efd690edea31e138d4efef417
 set SOUNDTOUCH=463ade388f3a51da078dc9ed062bf28e4ba29da7
 set SPIRV_CROSS=vulkan-sdk-1.3.290.0
+set DXCOMPILER=1.8.2407.12
+set DXAGILITY=1.614.1
 
-call :downloadfile "freetype-%FREETYPE%.tar.gz" https://download.savannah.gnu.org/releases/freetype/freetype-%FREETYPE%.tar.gz 1ac27e16c134a7f2ccea177faba19801131116fd682efc1f5737037c5db224b5 || goto error
-call :downloadfile "harfbuzz-%HARFBUZZ%.zip" https://github.com/harfbuzz/harfbuzz/archive/refs/tags/%HARFBUZZ%.zip b2bc56184ae37324bc4829fde7d3f9e6916866ad711ee85792e457547c9fd127 || goto error
+call :downloadfile "freetype-%FREETYPE%.tar.gz" https://download.savannah.gnu.org/releases/freetype/freetype-%FREETYPE%.tar.gz 5c3a8e78f7b24c20b25b54ee575d6daa40007a5f4eea2845861c3409b3021747 || goto error
+call :downloadfile "harfbuzz-%HARFBUZZ%.zip" https://github.com/harfbuzz/harfbuzz/archive/refs/tags/%HARFBUZZ%.zip 314acd13d88c24826b88799439da8cd3dbcefd17a08dde9bdfd5ca4c3db62047 || goto error
 call :downloadfile "lpng%LIBPNG%.zip" https://download.sourceforge.net/libpng/lpng1643.zip fc466a1e638e635d6c66363bdf3f38555b81b0141d0b06ba45b49ccca327436d || goto error
-call :downloadfile "jpegsr%LIBJPEG%.zip" https://ijg.org/files/jpegsr%LIBJPEG%.zip 6255da8c89e09d694e6800688c76145eb6870a76ac0d36c74fccd61b3940aafa || goto error
-call :downloadfile "SDL2-%SDL2%.zip" "https://github.com/libsdl-org/SDL/releases/download/release-%SDL2%/SDL2-%SDL2%.zip" 6d4e00fcbee9fd8985cc2869edeb0b1a751912b87506cf2fb6471e73d981e1f4 || goto error
+call :downloadfile "libjpeg-turbo-%LIBJPEGTURBO%.tar.gz" "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/%LIBJPEGTURBO%/libjpeg-turbo-%LIBJPEGTURBO%.tar.gz" 343e789069fc7afbcdfe44dbba7dbbf45afa98a15150e079a38e60e44578865d || goto error
+call :downloadfile "SDL2-%SDL2%.zip" "https://github.com/libsdl-org/SDL/releases/download/release-%SDL2%/SDL2-%SDL2%.zip" e5d592a60c1a4428095af323849e207e93cfbbe7a94931db526ce1213a2effed || goto error
 call :downloadfile "qtbase-everywhere-src-%QT%.zip" "https://download.qt.io/official_releases/qt/%QTMINOR%/%QT%/submodules/qtbase-everywhere-src-%QT%.zip" 488119aad60719a085a1e45c31641ac2406ef86fc088a3c99885c18e9d6b4bb9 || goto error
 call :downloadfile "qtimageformats-everywhere-src-%QT%.zip" "https://download.qt.io/official_releases/qt/%QTMINOR%/%QT%/submodules/qtimageformats-everywhere-src-%QT%.zip" 8e736b02db7dd67dbe834d56503b242344ce85d3532da692f1812b30ccf80997 || goto error
 call :downloadfile "qtsvg-everywhere-src-%QT%.zip" "https://download.qt.io/official_releases/qt/%QTMINOR%/%QT%/submodules/qtsvg-everywhere-src-%QT%.zip" 85a22142270a92be0dd0ab5d27cc53617b2a2f1a45fc0a3890024164032f8475 || goto error
@@ -75,8 +78,11 @@ call :downloadfile "zstd-fd5f8106a58601a963ee816e6a57aa7c61fafc53.patch" https:/
 
 call :downloadfile "cpuinfo-%CPUINFO%.zip" "https://github.com/pytorch/cpuinfo/archive/%CPUINFO%.zip" 13146ae7983d767a678dd01b0d6af591e77cec82babd41264b9164ab808d7d41 || goto error
 call :downloadfile "discord-rpc-%DISCORD_RPC%.zip" "https://github.com/stenzek/discord-rpc/archive/%DISCORD_RPC%.zip" 61e185e75d37b360c314125bcdf4697192d15e2d5209db3306ed6cd736d508b3 || goto error
-call :downloadfile "shaderc-%SHADERC%.zip" "https://github.com/stenzek/shaderc/archive/%SHADERC%.zip" a50687a3903328976c3a49f6ba6326196f7713660048957eb033408630af70b1 || goto error
+call :downloadfile "lunasvg-%LUNASVG%.zip" "https://github.com/stenzek/lunasvg/archive/%LUNASVG%.zip" 1425ec2bda0228b73ffdc70b0dc666fc7d2b69c33eec75a35c4421157c0e220c || goto error
+call :downloadfile "shaderc-%SHADERC%.zip" "https://github.com/stenzek/shaderc/archive/%SHADERC%.zip" 1fe2da5a003a1954005ab88b668b0d7b0ce1f6a049ae3f0a8b1beb8bac8824e3 || goto error
 call :downloadfile "soundtouch-%SOUNDTOUCH%.zip" "https://github.com/stenzek/soundtouch/archive/%SOUNDTOUCH%.zip" 107a1941181a69abe28018b9ad26fc0218625758ac193bc979abc9e26b7c0c3a || goto error
+call :downloadfile "dxcompiler-%DXCOMPILER%.zip" "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.DXC/%DXCOMPILER%" eb4f6a3bb6b08aaa62f435b3dbf26b180702ca52398d3650d0dd538f56742cdc || goto error
+call :downloadfile "dxagility-%DXAGILITY%.zip" "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.D3D12/%DXAGILITY%" 9880aa91602dd51dd6cf7911a2bca7a2323513b15338573cde014b3356eeaff2 || goto error
 
 if not exist SPIRV-Cross\ (
   git clone https://github.com/KhronosGroup/SPIRV-Cross/ -b %SPIRV_CROSS% --depth 1 || goto error
@@ -109,11 +115,10 @@ ninja -C build install || goto error
 cd .. || goto error
 
 echo Building libjpeg...
-rmdir /S /Q "jpeg-%LIBJPEG%"
-%SEVENZIP% x "jpegsr%LIBJPEG%.zip" || goto error
-cd "jpeg-%LIBJPEG%" || goto error
-%PATCH% -p1 < "%SCRIPTDIR%\libjpeg-cmake.patch" || goto error
-cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%INSTALLDIR%" -DCMAKE_INSTALL_PREFIX="%INSTALLDIR%" -DBUILD_SHARED_LIBS=ON -DBUILD_STATIC_LIBS=OFF -B build -G Ninja || goto error
+rmdir /S /Q "libjpeg-turbo-%LIBJPEGTURBO%"
+tar -xf "libjpeg-turbo-%LIBJPEGTURBO%.tar.gz" || goto error
+cd "libjpeg-turbo-%LIBJPEGTURBO%" || goto error
+cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%INSTALLDIR%" -DCMAKE_INSTALL_PREFIX="%INSTALLDIR%" -DENABLE_STATIC=OFF -DENABLE_SHARED=ON -B build -G Ninja || goto error
 cmake --build build --parallel || goto error
 ninja -C build install || goto error
 cd .. || goto error
@@ -272,6 +277,15 @@ cmake --build build --parallel || goto error
 ninja -C build install || goto error
 cd .. || goto error
 
+echo Building lunasvg...
+rmdir /S /Q "lunasvg-%LUNASVG%"
+%SEVENZIP% x "lunasvg-%LUNASVG%.zip" || goto error
+cd "lunasvg-%LUNASVG%" || goto error
+cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%INSTALLDIR%" -DCMAKE_INSTALL_PREFIX="%INSTALLDIR%" -DBUILD_SHARED_LIBS=ON -DLUNASVG_BUILD_EXAMPLES=OFF -B build -G Ninja
+cmake --build build --parallel || goto error
+ninja -C build install || goto error
+cd .. || goto error
+
 echo Building soundtouch...
 rmdir /S /Q "soundtouch-%SOUNDTOUCH%"
 %SEVENZIP% x "soundtouch-%SOUNDTOUCH%.zip" || goto error
@@ -279,6 +293,30 @@ cd "soundtouch-%SOUNDTOUCH%" || goto error
 cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%INSTALLDIR%" -DCMAKE_INSTALL_PREFIX="%INSTALLDIR%" -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -B build -G Ninja || goto error
 cmake --build build --parallel || goto error
 ninja -C build install || goto error
+cd .. || goto error
+
+rem These should already exist, but just in case.
+mkdir "%INSTALLDIR%\bin"
+mkdir "%INSTALLDIR%\include"
+mkdir "%INSTALLDIR%\lib"
+
+echo Extracting DXCompiler...
+rmdir /S /Q "dxcompiler-%DXCOMPILER%"
+mkdir "dxcompiler-%DXCOMPILER%"
+cd "dxcompiler-%DXCOMPILER%" || goto error
+%SEVENZIP% x "..\dxcompiler-%DXCOMPILER%.zip" || goto error
+copy build\native\include\* "%INSTALLDIR%\include" || goto error
+copy build\native\bin\x64\*.dll "%INSTALLDIR%\bin" || goto error
+copy build\native\lib\x64\*.lib "%INSTALLDIR%\lib" || goto error
+cd .. || goto error
+
+echo Extracting DXAgility...
+rmdir /S /Q "dxagility-%DXAGILITY%"
+mkdir "dxagility-%DXAGILITY%"
+cd "dxagility-%DXAGILITY%" || goto error
+%SEVENZIP% x "..\dxagility-%DXAGILITY%.zip" || goto error
+xcopy /S /Y build\native\include\* "%INSTALLDIR%\include" || goto error
+copy build\native\bin\x64\*.dll "%INSTALLDIR%\bin" || goto error
 cd .. || goto error
 
 echo Cleaning up...

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -17,9 +17,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -57,6 +55,8 @@ public:
     bool vk_khr_driver_properties : 1;
     bool vk_khr_dynamic_rendering : 1;
     bool vk_khr_dynamic_rendering_local_read : 1;
+    bool vk_khr_maintenance4 : 1;
+    bool vk_khr_maintenance5 : 1;
     bool vk_khr_push_descriptor : 1;
     bool vk_khr_shader_non_semantic_info : 1;
   };
@@ -74,8 +74,6 @@ public:
   static GPUList EnumerateGPUs(VkInstance instance);
   static GPUList EnumerateGPUs();
   static AdapterInfoList GetAdapterList();
-
-  RenderAPI GetRenderAPI() const override;
 
   bool HasSurface() const override;
 
@@ -142,8 +140,8 @@ public:
 
   void SetVSyncMode(GPUVSyncMode mode, bool allow_present_throttle) override;
 
-  bool BeginPresent(bool skip_present) override;
-  void EndPresent(bool explicit_present) override;
+  PresentResult BeginPresent(u32 clear_color) override;
+  void EndPresent(bool explicit_present, u64 present_time) override;
   void SubmitPresent() override;
 
   // Global state accessors
@@ -232,13 +230,13 @@ public:
   void UnbindTextureBuffer(VulkanTextureBuffer* buf);
 
 protected:
-  bool CreateDevice(std::string_view adapter, bool threaded_presentation,
-                    std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features,
-                    Error* error) override;
+  bool CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
+                    FeatureMask disabled_features, Error* error) override;
   void DestroyDevice() override;
 
-  bool ReadPipelineCache(const std::string& filename) override;
-  bool GetPipelineCacheData(DynamicHeapArray<u8>* data) override;
+  bool ReadPipelineCache(DynamicHeapArray<u8> data, Error* error) override;
+  bool CreatePipelineCache(const std::string& path, Error* error) override;
+  bool GetPipelineCacheData(DynamicHeapArray<u8>* data, Error* error) override;
 
 private:
   enum DIRTY_FLAG : u32
@@ -308,7 +306,7 @@ private:
   static VkInstance CreateVulkanInstance(const WindowInfo& wi, OptionalExtensions* oe, bool enable_debug_utils,
                                          bool enable_validation_layer);
 
-  bool ValidatePipelineCacheHeader(const VK_PIPELINE_CACHE_HEADER& header);
+  bool ValidatePipelineCacheHeader(const VK_PIPELINE_CACHE_HEADER& header, Error* error);
   void FillPipelineCacheHeader(VK_PIPELINE_CACHE_HEADER* header);
 
   // Enable/disable debug message runtime.
@@ -326,11 +324,6 @@ private:
   bool IsDeviceMali() const;
   bool IsDeviceImgTec() const;
   bool IsBrokenMobileDriver() const;
-
-  void EndAndSubmitCommandBuffer(VulkanSwapChain* present_swap_chain, bool explicit_present, bool submit_on_thread);
-  void MoveToNextCommandBuffer();
-  void WaitForPresentComplete();
-  bool CheckLastSubmitFail();
 
   using ExtensionList = std::vector<const char*>;
   static bool SelectInstanceExtensions(ExtensionList* extension_list, const WindowInfo& wi, OptionalExtensions* oe,
@@ -381,7 +374,7 @@ private:
   // Ends a render pass if we're currently in one.
   // When Bind() is next called, the pass will be restarted.
   void BeginRenderPass();
-  void BeginSwapChainRenderPass();
+  void BeginSwapChainRenderPass(u32 clear_color);
   void EndRenderPass();
   bool InRenderPass();
 
@@ -393,13 +386,9 @@ private:
 
   void BeginCommandBuffer(u32 index);
   void WaitForCommandBufferCompletion(u32 index);
-
-  void DoSubmitCommandBuffer(u32 index, VulkanSwapChain* present_swap_chain);
-  void DoPresent(VulkanSwapChain* present_swap_chain);
-  void WaitForPresentComplete(std::unique_lock<std::mutex>& lock);
-  void PresentThread();
-  void StartPresentThread();
-  void StopPresentThread();
+  void EndAndSubmitCommandBuffer(VulkanSwapChain* present_swap_chain, bool explicit_present);
+  void MoveToNextCommandBuffer();
+  void QueuePresent(VulkanSwapChain* present_swap_chain);
 
   VkInstance m_instance = VK_NULL_HANDLE;
   VkPhysicalDevice m_physical_device = VK_NULL_HANDLE;
@@ -424,21 +413,7 @@ private:
   u64 m_completed_fence_counter = 0;
   u32 m_current_frame = 0;
 
-  std::atomic_bool m_last_submit_failed{false};
-  std::atomic_bool m_present_done{true};
-  std::mutex m_present_mutex;
-  std::condition_variable m_present_queued_cv;
-  std::condition_variable m_present_done_cv;
-  std::thread m_present_thread;
-  std::atomic_bool m_present_thread_done{false};
-
-  struct QueuedPresent
-  {
-    VulkanSwapChain* swap_chain;
-    u32 command_buffer_index;
-  };
-
-  QueuedPresent m_queued_present = {nullptr, 0xFFFFFFFFu};
+  bool m_device_was_lost = false;
 
   std::unordered_map<RenderPassCacheKey, VkRenderPass, RenderPassCacheKeyHash> m_render_pass_cache;
   GPUFramebufferManager<VkFramebuffer, CreateFramebuffer, DestroyFramebuffer> m_framebuffer_manager;

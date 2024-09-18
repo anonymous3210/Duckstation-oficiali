@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -57,8 +57,6 @@ public:
 public:
   D3D12Device();
   ~D3D12Device() override;
-
-  RenderAPI GetRenderAPI() const override;
 
   bool HasSurface() const override;
 
@@ -126,8 +124,8 @@ public:
   bool SetGPUTimingEnabled(bool enabled) override;
   float GetAndResetAccumulatedGPUTime() override;
 
-  bool BeginPresent(bool skip_present) override;
-  void EndPresent(bool explicit_present) override;
+  PresentResult BeginPresent(u32 clear_color) override;
+  void EndPresent(bool explicit_present, u64 present_time) override;
   void SubmitPresent() override;
 
   // Global state accessors
@@ -185,13 +183,13 @@ public:
   void UnbindTextureBuffer(D3D12TextureBuffer* buf);
 
 protected:
-  bool CreateDevice(std::string_view adapter, bool threaded_presentation,
-                    std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features,
-                    Error* error) override;
+  bool CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
+                    FeatureMask disabled_features, Error* error) override;
   void DestroyDevice() override;
 
-  bool ReadPipelineCache(const std::string& filename) override;
-  bool GetPipelineCacheData(DynamicHeapArray<u8>* data) override;
+  bool ReadPipelineCache(DynamicHeapArray<u8> data, Error* error) override;
+  bool CreatePipelineCache(const std::string& path, Error* error) override;
+  bool GetPipelineCacheData(DynamicHeapArray<u8>* data, Error* error) override;
 
 private:
   enum DIRTY_FLAG : u32
@@ -221,9 +219,18 @@ private:
     bool has_timestamp_query = false;
   };
 
+  struct PIPELINE_CACHE_HEADER
+  {
+    u64 adapter_luid;
+    u32 render_api_version;
+    u32 unused;
+  };
+  static_assert(sizeof(PIPELINE_CACHE_HEADER) == 16);
+
   using SamplerMap = std::unordered_map<u64, D3D12DescriptorHandle>;
 
-  void SetFeatures(FeatureMask disabled_features);
+  void GetPipelineCacheHeader(PIPELINE_CACHE_HEADER* hdr);
+  void SetFeatures(D3D_FEATURE_LEVEL feature_level, FeatureMask disabled_features);
 
   u32 GetSwapChainBufferCount() const;
   bool CreateSwapChain(Error* error);
@@ -276,7 +283,7 @@ private:
   // Ends a render pass if we're currently in one.
   // When Bind() is next called, the pass will be restarted.
   void BeginRenderPass();
-  void BeginSwapChainRenderPass();
+  void BeginSwapChainRenderPass(u32 clear_color);
   void EndRenderPass();
   bool InRenderPass();
 
@@ -292,7 +299,6 @@ private:
 
   std::array<CommandList, NUM_COMMAND_LISTS> m_command_lists;
   u32 m_current_command_list = NUM_COMMAND_LISTS - 1;
-  D3D_FEATURE_LEVEL m_feature_level = D3D_FEATURE_LEVEL_11_0;
 
   ComPtr<IDXGIFactory5> m_dxgi_factory;
   ComPtr<IDXGISwapChain1> m_swap_chain;
@@ -301,6 +307,7 @@ private:
   bool m_allow_tearing_supported = false;
   bool m_using_allow_tearing = false;
   bool m_is_exclusive_fullscreen = false;
+  bool m_device_was_lost = false;
 
   D3D12DescriptorHeapManager m_descriptor_heap_manager;
   D3D12DescriptorHeapManager m_rtv_heap_manager;

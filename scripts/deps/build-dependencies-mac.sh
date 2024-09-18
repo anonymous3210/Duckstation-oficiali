@@ -34,19 +34,21 @@ if [ "${INSTALLDIR:0:1}" != "/" ]; then
 	INSTALLDIR="$PWD/$INSTALLDIR"
 fi
 
-FREETYPE=2.13.2
-HARFBUZZ=8.3.1
-SDL2=2.30.6
+FREETYPE=2.13.3
+HARFBUZZ=9.0.0
+SDL2=2.30.7
 ZSTD=1.5.6
 LIBPNG=1.6.43
-LIBJPEG=9f
+LIBJPEGTURBO=3.0.3
 LIBWEBP=1.4.0
+FFMPEG=7.0.2
 MOLTENVK=1.2.9
 QT=6.7.2
 
 CPUINFO=7524ad504fdcfcf75a18a133da6abd75c5d48053
 DISCORD_RPC=144f3a3f1209994d8d9e8a87964a989cb9911c1e
-SHADERC=feb2460bf3a504d67011246edeb810c45ea58826
+LUNASVG=9af1ac7b90658a279b372add52d6f77a4ebb482c
+SHADERC=3c12f7af773c547973138bee6d6ac70d91729479
 SOUNDTOUCH=463ade388f3a51da078dc9ed062bf28e4ba29da7
 SPIRV_CROSS=vulkan-sdk-1.3.290.0
 
@@ -69,13 +71,14 @@ CMAKE_ARCH_ARM64=-DCMAKE_OSX_ARCHITECTURES="arm64"
 CMAKE_ARCH_UNIVERSAL=-DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
 
 cat > SHASUMS <<EOF
-12991c4e55c506dd7f9b765933e62fd2be2e06d421505d7950a132e4f1bb484d  freetype-$FREETYPE.tar.xz
-19a54fe9596f7a47c502549fce8e8a10978c697203774008cc173f8360b19a9a  harfbuzz-$HARFBUZZ.tar.gz
-c6ef64ca18a19d13df6eb22df9aff19fb0db65610a74cc81dae33a82235cacd4  SDL2-$SDL2.tar.gz
-8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1  zstd-$ZSTD.tar.gz
+0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289  freetype-$FREETYPE.tar.xz
+b7e481b109d19aefdba31e9f5888aa0cdfbe7608fed9a43494c060ce1f8a34d2  harfbuzz-$HARFBUZZ.tar.gz
 6a5ca0652392a2d7c9db2ae5b40210843c0bbc081cbd410825ab00cc59f14a6c  libpng-$LIBPNG.tar.xz
+343e789069fc7afbcdfe44dbba7dbbf45afa98a15150e079a38e60e44578865d  libjpeg-turbo-$LIBJPEGTURBO.tar.gz
 61f873ec69e3be1b99535634340d5bde750b2e4447caa1db9f61be3fd49ab1e5  libwebp-$LIBWEBP.tar.gz
-04705c110cb2469caa79fb71fba3d7bf834914706e9641a4589485c1f832565b  jpegsrc.v$LIBJPEG.tar.gz
+2508c80438cd5ff3bbeb8fe36b8f3ce7805018ff30303010b61b03bb83ab9694  SDL2-$SDL2.tar.gz
+8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1  zstd-$ZSTD.tar.gz
+8646515b638a3ad303e23af6a3587734447cb8fc0a0c064ecdb8e95c4fd8b389  ffmpeg-$FFMPEG.tar.xz
 f415a09385030c6510a936155ce211f617c31506db5fbc563e804345f1ecf56e  v$MOLTENVK.tar.gz
 c5f22a5e10fb162895ded7de0963328e7307611c688487b5d152c9ee64767599  qtbase-everywhere-src-$QT.tar.xz
 e1a1d8785fae67d16ad0a443b01d5f32663a6b68d275f1806ebab257485ce5d6  qtimageformats-everywhere-src-$QT.tar.xz
@@ -84,18 +87,20 @@ fb0d1286a35be3583fee34aeb5843c94719e07193bdf1d4d8b0dc14009caef01  qtsvg-everywhe
 9845780b5dc1b7279d57836db51aeaf2e4a1160c42be09750616f39157582ca9  qttranslations-everywhere-src-$QT.tar.xz
 e1351218d270db49c3dddcba04fb2153b09731ea3fa6830e423f5952f44585be  cpuinfo-$CPUINFO.tar.gz
 3eea5ccce6670c126282f1ba4d32c19d486db49a1a5cbfb8d6f48774784d310c  discord-rpc-$DISCORD_RPC.tar.gz
-5a7f86eba3c6301bb573def825977c31aa3d5fc5500f213c123498707fdbd378  shaderc-$SHADERC.tar.gz
+3998b024b0d442614a9ee270e76e018bb37a17b8c6941212171731123cbbcac7  lunasvg-$LUNASVG.tar.gz
+0663bf6dabbb86fc0e697a601ee0030af715c8c1fbfa6e2b2240bde332f479a0  shaderc-$SHADERC.tar.gz
 fe45c2af99f6102d2704277d392c1c83b55180a70bfd17fb888cc84a54b70573  soundtouch-$SOUNDTOUCH.tar.gz
 EOF
 
 curl -L \
 	-o "freetype-$FREETYPE.tar.xz" "https://sourceforge.net/projects/freetype/files/freetype2/$FREETYPE/freetype-$FREETYPE.tar.xz/download" \
 	-o "harfbuzz-$HARFBUZZ.tar.gz" "https://github.com/harfbuzz/harfbuzz/archive/refs/tags/$HARFBUZZ.tar.gz" \
+	-O "https://downloads.sourceforge.net/project/libpng/libpng16/$LIBPNG/libpng-$LIBPNG.tar.xz" \
+	-O "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/$LIBJPEGTURBO/libjpeg-turbo-$LIBJPEGTURBO.tar.gz" \
+	-O "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-$LIBWEBP.tar.gz" \
 	-O "https://github.com/libsdl-org/SDL/releases/download/release-$SDL2/SDL2-$SDL2.tar.gz" \
 	-O "https://github.com/facebook/zstd/releases/download/v$ZSTD/zstd-$ZSTD.tar.gz" \
-	-O "https://downloads.sourceforge.net/project/libpng/libpng16/$LIBPNG/libpng-$LIBPNG.tar.xz" \
-	-O "https://ijg.org/files/jpegsrc.v$LIBJPEG.tar.gz" \
-	-O "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-$LIBWEBP.tar.gz" \
+	-O "https://ffmpeg.org/releases/ffmpeg-$FFMPEG.tar.xz" \
 	-O "https://github.com/KhronosGroup/MoltenVK/archive/refs/tags/v$MOLTENVK.tar.gz" \
 	-O "https://download.qt.io/official_releases/qt/${QT%.*}/$QT/submodules/qtbase-everywhere-src-$QT.tar.xz" \
 	-O "https://download.qt.io/official_releases/qt/${QT%.*}/$QT/submodules/qtimageformats-everywhere-src-$QT.tar.xz" \
@@ -104,6 +109,7 @@ curl -L \
 	-O "https://download.qt.io/official_releases/qt/${QT%.*}/$QT/submodules/qttranslations-everywhere-src-$QT.tar.xz" \
 	-o "cpuinfo-$CPUINFO.tar.gz" "https://github.com/stenzek/cpuinfo/archive/$CPUINFO.tar.gz" \
 	-o "discord-rpc-$DISCORD_RPC.tar.gz" "https://github.com/stenzek/discord-rpc/archive/$DISCORD_RPC.tar.gz" \
+	-o "lunasvg-$LUNASVG.tar.gz" "https://github.com/stenzek/lunasvg/archive/$LUNASVG.tar.gz" \
 	-o "shaderc-$SHADERC.tar.gz" "https://github.com/stenzek/shaderc/archive/$SHADERC.tar.gz" \
 	-o "soundtouch-$SOUNDTOUCH.tar.gz" "https://github.com/stenzek/soundtouch/archive/$SOUNDTOUCH.tar.gz"
 
@@ -113,27 +119,6 @@ shasum -a 256 --check SHASUMS
 if [ ! -d "SPIRV-Cross" ]; then
   git clone https://github.com/KhronosGroup/SPIRV-Cross/ -b $SPIRV_CROSS --depth 1
 fi
-
-echo "Installing SDL2..."
-rm -fr "SDL2-$SDL2"
-tar xf "SDL2-$SDL2.tar.gz"
-cd "SDL2-$SDL2"
-cmake -B build "${CMAKE_COMMON[@]}" "$CMAKE_ARCH_UNIVERSAL" -DSDL_X11=OFF -DBUILD_SHARED_LIBS=ON
-make -C build "-j$NPROCS"
-make -C build install
-cd ..
-
-echo "Installing Zstd..."
-rm -fr "zstd-$ZSTD"
-tar xf "zstd-$ZSTD.tar.gz"
-cd "zstd-$ZSTD"
-cmake "${CMAKE_COMMON[@]}" "$CMAKE_ARCH_X64" -DBUILD_SHARED_LIBS=ON -DZSTD_BUILD_PROGRAMS=OFF -B build-dir build/cmake
-make -C build-dir "-j$NPROCS"
-cmake "${CMAKE_COMMON[@]}" "$CMAKE_ARCH_ARM64" -DBUILD_SHARED_LIBS=ON -DZSTD_BUILD_PROGRAMS=OFF -B build-dir-arm64 build/cmake
-make -C build-dir-arm64 "-j$NPROCS"
-merge_binaries $(realpath build-dir) $(realpath build-dir-arm64)
-make -C build-dir install
-cd ..
 
 echo "Installing libpng..."
 rm -fr "libpng-$LIBPNG"
@@ -148,21 +133,27 @@ make -C build install
 cd ..
 
 echo "Building libjpeg..."
-rm -fr "jpeg-$LIBJPEG"
-tar xf "jpegsrc.v$LIBJPEG.tar.gz"
-cd "jpeg-$LIBJPEG"
-mkdir build
-cd build
-../configure --prefix="$INSTALLDIR" --disable-static --enable-shared --host="x86_64-apple-darwin" CFLAGS="-arch x86_64"
-make "-j$NPROCS"
-cd ..
-mkdir build-arm64
-cd build-arm64
-../configure --prefix="$INSTALLDIR" --disable-static --enable-shared --host="aarch64-apple-darwin" CFLAGS="-arch arm64"
-make "-j$NPROCS"
-cd ..
+rm -fr "libjpeg-turbo-$LIBJPEGTURBO"
+tar xf "libjpeg-turbo-$LIBJPEGTURBO.tar.gz"
+cd "libjpeg-turbo-$LIBJPEGTURBO"
+cmake "${CMAKE_COMMON[@]}" "$CMAKE_ARCH_X64" -DENABLE_STATIC=OFF -DENABLE_SHARED=ON -B build
+make -C build "-j$NPROCS"
+cmake "${CMAKE_COMMON[@]}" "$CMAKE_ARCH_ARM64" -DENABLE_STATIC=OFF -DENABLE_SHARED=ON -B build-arm64
+make -C build-arm64 "-j$NPROCS"
 merge_binaries $(realpath build) $(realpath build-arm64)
 make -C build install
+cd ..
+
+echo "Installing Zstd..."
+rm -fr "zstd-$ZSTD"
+tar xf "zstd-$ZSTD.tar.gz"
+cd "zstd-$ZSTD"
+cmake "${CMAKE_COMMON[@]}" "$CMAKE_ARCH_X64" -DBUILD_SHARED_LIBS=ON -DZSTD_BUILD_PROGRAMS=OFF -B build-dir build/cmake
+make -C build-dir "-j$NPROCS"
+cmake "${CMAKE_COMMON[@]}" "$CMAKE_ARCH_ARM64" -DBUILD_SHARED_LIBS=ON -DZSTD_BUILD_PROGRAMS=OFF -B build-dir-arm64 build/cmake
+make -C build-dir-arm64 "-j$NPROCS"
+merge_binaries $(realpath build-dir) $(realpath build-dir-arm64)
+make -C build-dir install
 cd ..
 
 echo "Building FreeType without HarfBuzz..."
@@ -207,6 +198,50 @@ make -C build-arm64 "-j$NPROCS"
 merge_binaries $(realpath build) $(realpath build-arm64)
 make -C build install
 cd ..
+
+echo "Installing SDL2..."
+rm -fr "SDL2-$SDL2"
+tar xf "SDL2-$SDL2.tar.gz"
+cd "SDL2-$SDL2"
+cmake -B build "${CMAKE_COMMON[@]}" "$CMAKE_ARCH_UNIVERSAL" -DSDL_X11=OFF -DBUILD_SHARED_LIBS=ON
+make -C build "-j$NPROCS"
+make -C build install
+cd ..
+
+echo "Installing FFmpeg..."
+rm -fr "ffmpeg-$FFMPEG"
+tar xf "ffmpeg-$FFMPEG.tar.xz"
+cd "ffmpeg-$FFMPEG"
+mkdir build
+cd build
+LDFLAGS="-dead_strip $LDFLAGS" CFLAGS="-Os $CFLAGS" CXXFLAGS="-Os $CXXFLAGS" \
+	../configure --prefix="$INSTALLDIR" \
+	--enable-cross-compile --arch=x86_64 --cc='clang -arch x86_64' --cxx='clang++ -arch x86_64' --disable-x86asm \
+	--disable-all --disable-autodetect --disable-static --enable-shared \
+	--enable-avcodec --enable-avformat --enable-avutil --enable-swresample --enable-swscale \
+	--enable-audiotoolbox --enable-videotoolbox \
+	--enable-encoder=ffv1,qtrle,pcm_s16be,pcm_s16le,*_at,*_videotoolbox \
+	--enable-muxer=avi,matroska,mov,mp3,mp4,wav \
+	--enable-protocol=file
+make "-j$NPROCS"
+cd ..
+mkdir build-arm64
+cd build-arm64
+LDFLAGS="-dead_strip $LDFLAGS" CFLAGS="-Os $CFLAGS" CXXFLAGS="-Os $CXXFLAGS" \
+	../configure --prefix="$INSTALLDIR" \
+	--enable-cross-compile --arch=arm64 --cc='clang -arch arm64' --cxx='clang++ -arch arm64' --disable-x86asm \
+	--disable-all --disable-autodetect --disable-static --enable-shared \
+	--enable-avcodec --enable-avformat --enable-avutil --enable-swresample --enable-swscale \
+	--enable-audiotoolbox --enable-videotoolbox \
+	--enable-encoder=ffv1,qtrle,pcm_s16be,pcm_s16le,*_at,*_videotoolbox \
+	--enable-muxer=avi,matroska,mov,mp3,mp4,wav \
+	--enable-protocol=file
+make "-j$NPROCS"
+cd ..
+merge_binaries $(realpath build) $(realpath build-arm64)
+cd build
+make install
+cd ../..
 
 # MoltenVK already builds universal binaries, nothing special to do here.
 echo "Installing MoltenVK..."
@@ -345,6 +380,15 @@ rm -fr "discord-rpc-$DISCORD_RPC"
 tar xf "discord-rpc-$DISCORD_RPC.tar.gz"
 cd "discord-rpc-$DISCORD_RPC"
 cmake "${CMAKE_COMMON[@]}" "$CMAKE_ARCH_UNIVERSAL" -DBUILD_SHARED_LIBS=ON -B build
+cmake --build build --parallel
+cmake --install build
+cd ..
+
+echo "Building lunasvg..."
+rm -fr "lunasvg-$LUNASVG"
+tar xf "lunasvg-$LUNASVG.tar.gz"
+cd "lunasvg-$LUNASVG"
+cmake "${CMAKE_COMMON[@]}" "$CMAKE_ARCH_UNIVERSAL" -DBUILD_SHARED_LIBS=ON -DLUNASVG_BUILD_EXAMPLES=OFF -B build
 cmake --build build --parallel
 cmake --install build
 cd ..

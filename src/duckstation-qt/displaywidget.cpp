@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "displaywidget.h"
 #include "mainwindow.h"
@@ -44,13 +44,7 @@ DisplayWidget::DisplayWidget(QWidget* parent) : QWidget(parent)
   setMouseTracking(true);
 }
 
-DisplayWidget::~DisplayWidget()
-{
-#ifdef _WIN32
-  if (m_clip_mouse_enabled)
-    ClipCursor(nullptr);
-#endif
-}
+DisplayWidget::~DisplayWidget() = default;
 
 int DisplayWidget::scaledWindowWidth() const
 {
@@ -100,11 +94,9 @@ void DisplayWidget::updateRelativeMode(bool enabled)
 
   if (enabled)
   {
-#ifdef _WIN32
-    m_relative_mouse_enabled = !clip_cursor;
-    m_clip_mouse_enabled = clip_cursor;
-#else
     m_relative_mouse_enabled = true;
+#ifdef _WIN32
+    m_clip_mouse_enabled = clip_cursor;
 #endif
     m_relative_mouse_start_pos = QCursor::pos();
     updateCenterPos();
@@ -158,6 +150,11 @@ void DisplayWidget::handleCloseEvent(QCloseEvent* event)
 void DisplayWidget::destroy()
 {
   m_destroying = true;
+
+#ifdef _WIN32
+  if (m_clip_mouse_enabled)
+    ClipCursor(nullptr);
+#endif
 
 #ifdef __APPLE__
   // See Qt documentation, entire application is in full screen state, and the main
@@ -263,12 +260,10 @@ bool DisplayWidget::event(QEvent* event)
 
     case QEvent::MouseMove:
     {
-      const QMouseEvent* mouse_event = static_cast<QMouseEvent*>(event);
-
       if (!m_relative_mouse_enabled)
       {
         const qreal dpr = QtUtils::GetDevicePixelRatioForWidget(this);
-        const QPoint mouse_pos = mouse_event->pos();
+        const QPoint mouse_pos = static_cast<QMouseEvent*>(event)->pos();
 
         const float scaled_x = static_cast<float>(static_cast<qreal>(mouse_pos.x()) * dpr);
         const float scaled_y = static_cast<float>(static_cast<qreal>(mouse_pos.y()) * dpr);
@@ -298,10 +293,13 @@ bool DisplayWidget::event(QEvent* event)
         }
 #endif
 
-        if (dx != 0.0f)
-          InputManager::UpdatePointerRelativeDelta(0, InputPointerAxis::X, dx);
-        if (dy != 0.0f)
-          InputManager::UpdatePointerRelativeDelta(0, InputPointerAxis::Y, dy);
+        if (!InputManager::IsUsingRawInput())
+        {
+          if (dx != 0.0f)
+            InputManager::UpdatePointerRelativeDelta(0, InputPointerAxis::X, dx);
+          if (dy != 0.0f)
+            InputManager::UpdatePointerRelativeDelta(0, InputPointerAxis::Y, dy);
+        }
       }
 
       return true;
@@ -311,8 +309,11 @@ bool DisplayWidget::event(QEvent* event)
     case QEvent::MouseButtonDblClick:
     case QEvent::MouseButtonRelease:
     {
-      const u32 button_index = CountTrailingZeros(static_cast<u32>(static_cast<const QMouseEvent*>(event)->button()));
-      emit windowMouseButtonEvent(static_cast<int>(button_index), event->type() != QEvent::MouseButtonRelease);
+      if (!m_relative_mouse_enabled || !InputManager::IsUsingRawInput())
+      {
+        const u32 button_index = CountTrailingZeros(static_cast<u32>(static_cast<const QMouseEvent*>(event)->button()));
+        emit windowMouseButtonEvent(static_cast<int>(button_index), event->type() != QEvent::MouseButtonRelease);
+      }
 
       // don't toggle fullscreen when we're bound.. that wouldn't end well.
       if (event->type() == QEvent::MouseButtonDblClick &&

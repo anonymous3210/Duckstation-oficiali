@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -8,6 +8,7 @@
 #include "core/cpu_core.h"
 #include "core/types.h"
 
+#include <QtCore/QTimer>
 #include <QtWidgets/QMainWindow>
 #include <memory>
 #include <optional>
@@ -41,9 +42,8 @@ private Q_SLOTS:
   void onSystemResumed();
   void onDebuggerMessageReported(const QString& message);
 
+  void timerRefresh();
   void refreshAll();
-
-  void scrollToPC();
 
   void onPauseActionToggled(bool paused);
   void onRunToCursorTriggered();
@@ -56,6 +56,7 @@ private Q_SLOTS:
   void onToggleBreakpointTriggered();
   void onClearBreakpointsTriggered();
   void onBreakpointListContextMenuRequested();
+  void onBreakpointListItemChanged(QTreeWidgetItem* item, int column);
   void onStepIntoActionTriggered();
   void onStepOverActionTriggered();
   void onStepOutActionTriggered();
@@ -70,12 +71,14 @@ private:
   void disconnectSignals();
   void createModels();
   void setUIEnabled(bool enabled, bool allow_pause);
+  void saveCurrentState();
   void setMemoryViewRegion(Bus::MemoryRegion region);
   void toggleBreakpoint(VirtualMemoryAddress address);
   void clearBreakpoints();
   std::optional<VirtualMemoryAddress> getSelectedCodeAddress();
   bool tryFollowLoadStore(VirtualMemoryAddress address);
-  void scrollToCodeAddress(VirtualMemoryAddress address);
+  void scrollToPC(bool center);
+  void scrollToCodeAddress(VirtualMemoryAddress address, bool center);
   bool scrollToMemoryAddress(VirtualMemoryAddress address);
   void refreshBreakpointList();
   void refreshBreakpointList(const CPU::BreakpointList& bps);
@@ -87,6 +90,8 @@ private:
   std::unique_ptr<DebuggerCodeModel> m_code_model;
   std::unique_ptr<DebuggerRegistersModel> m_registers_model;
   std::unique_ptr<DebuggerStackModel> m_stack_model;
+
+  QTimer m_refresh_timer;
 
   Bus::MemoryRegion m_active_memory_region;
 

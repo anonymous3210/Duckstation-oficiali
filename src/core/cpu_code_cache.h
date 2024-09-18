@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -21,12 +21,6 @@ bool ProcessStartup(Error* error);
 
 /// Frees resources, call once at shutdown.
 void ProcessShutdown();
-
-/// Initializes resources for the system.
-void Initialize();
-
-/// Frees resources used by the system.
-void Shutdown();
 
 /// Runs the system.
 [[noreturn]] void Execute();

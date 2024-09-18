@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>.
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "setupwizarddialog.h"
 #include "controllersettingwidgetbinder.h"
@@ -14,6 +14,8 @@
 #include "util/input_manager.h"
 
 #include "common/file_system.h"
+
+#include "fmt/format.h"
 
 #include <QtWidgets/QMessageBox>
 
@@ -185,8 +187,7 @@ void SetupWizardDialog::setupLanguagePage()
                                                InterfaceSettingsWidget::DEFAULT_THEME_NAME, "InterfaceSettingsWidget");
   connect(m_ui.theme, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &SetupWizardDialog::themeChanged);
 
-  for (const auto& [language, code] : Host::GetAvailableLanguageList())
-    m_ui.language->addItem(QString::fromUtf8(language), QString::fromLatin1(code));
+  InterfaceSettingsWidget::populateLanguageDropdown(m_ui.language);
   SettingWidgetBinder::BindWidgetToStringSetting(nullptr, m_ui.language, "Main", "Language",
                                                  QtHost::GetDefaultLanguage());
   connect(m_ui.language, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -198,13 +199,13 @@ void SetupWizardDialog::setupLanguagePage()
 void SetupWizardDialog::themeChanged()
 {
   // Main window gets recreated at the end here anyway, so it's fine to just yolo it.
-  MainWindow::updateApplicationTheme();
+  QtHost::UpdateApplicationTheme();
 }
 
 void SetupWizardDialog::languageChanged()
 {
   // Skip the recreation, since we don't have many dynamic UI elements.
-  QtHost::InstallTranslator(this);
+  QtHost::UpdateApplicationLanguage(this);
   m_ui.retranslateUi(this);
   setupControllerPage(false);
 }
@@ -212,8 +213,9 @@ void SetupWizardDialog::languageChanged()
 void SetupWizardDialog::setupBIOSPage()
 {
   SettingWidgetBinder::BindWidgetToFolderSetting(nullptr, m_ui.biosSearchDirectory, m_ui.browseBiosSearchDirectory,
-                                                 m_ui.openBiosSearchDirectory, m_ui.resetBiosSearchDirectory, "BIOS",
-                                                 "SearchDirectory", Path::Combine(EmuFolders::DataRoot, "bios"));
+                                                 tr("Select BIOS Directory"), m_ui.openBiosSearchDirectory,
+                                                 m_ui.resetBiosSearchDirectory, "BIOS", "SearchDirectory",
+                                                 Path::Combine(EmuFolders::DataRoot, "bios"));
 
   refreshBiosList();
 
@@ -438,6 +440,10 @@ void SetupWizardDialog::setupControllerPage(bool initial)
     for (const PadWidgets& w : pad_widgets)
       w.type_combo->blockSignals(false);
   }
+}
+
+void SetupWizardDialog::updateStylesheets()
+{
 }
 
 void SetupWizardDialog::openAutomaticMappingMenu(u32 port, QLabel* update_label)

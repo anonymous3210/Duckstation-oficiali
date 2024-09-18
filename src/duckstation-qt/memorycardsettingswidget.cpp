@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "memorycardsettingswidget.h"
 
@@ -14,6 +14,8 @@
 
 #include "common/small_string.h"
 #include "common/string_util.h"
+
+#include "fmt/format.h"
 
 #include <QtCore/QUrl>
 #include <QtWidgets/QFileDialog>
@@ -90,9 +92,9 @@ void MemoryCardSettingsWidget::createUi(SettingsWindow* dialog)
 
     layout->addWidget(box);
 
-    SettingWidgetBinder::BindWidgetToFolderSetting(m_dialog->getSettingsInterface(), m_memory_card_directory, browse,
-                                                   open_memcards, reset, "MemoryCards", "Directory",
-                                                   Path::Combine(EmuFolders::DataRoot, "memcards"));
+    SettingWidgetBinder::BindWidgetToFolderSetting(
+      m_dialog->getSettingsInterface(), m_memory_card_directory, browse, tr("Select Memory Card Directory"),
+      open_memcards, reset, "MemoryCards", "Directory", Path::Combine(EmuFolders::DataRoot, "memcards"));
   }
 
   layout->addStretch(1);
@@ -114,9 +116,8 @@ void MemoryCardSettingsWidget::createPortSettingsUi(SettingsWindow* dialog, int 
 
   const MemoryCardType default_value = (index == 0) ? MemoryCardType::PerGameTitle : MemoryCardType::None;
   SettingWidgetBinder::BindWidgetToEnumSetting(m_dialog->getSettingsInterface(), ui->memory_card_type, "MemoryCards",
-                                               fmt::format("Card{}Type", index + 1),
-                                               &Settings::ParseMemoryCardTypeName, &Settings::GetMemoryCardTypeName,
-                                               default_value);
+                                               fmt::format("Card{}Type", index + 1), &Settings::ParseMemoryCardTypeName,
+                                               &Settings::GetMemoryCardTypeName, default_value);
   ui->layout->addWidget(new QLabel(tr("Memory Card Type:"), ui->container));
   ui->layout->addWidget(ui->memory_card_type);
 

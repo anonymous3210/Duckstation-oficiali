@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cd_image_hasher.h"
 #include "cd_image.h"
-
-#include "util/host.h"
+#include "host.h"
 
 #include "common/md5_digest.h"
 #include "common/string_util.h"
+
+#include "fmt/format.h"
 
 namespace CDImageHasher {
 

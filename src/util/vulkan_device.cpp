@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "vulkan_device.h"
 #include "vulkan_builders.h"
@@ -97,8 +97,6 @@ const std::array<VkFormat, static_cast<u32>(GPUTexture::Format::MaxCount)> Vulka
   VK_FORMAT_R32G32B32A32_SFLOAT,      // RGBA32F
   VK_FORMAT_A2R10G10B10_UNORM_PACK32, // RGB10A2
 };
-
-static constexpr VkClearValue s_present_clear_color = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
 
 // Handles are always 64-bit, even on 32-bit platforms.
 static const VkRenderPass DYNAMIC_RENDERING_RENDER_PASS = ((VkRenderPass) static_cast<s64>(-1LL));
@@ -509,6 +507,14 @@ bool VulkanDevice::SelectDeviceExtensions(ExtensionList* extension_list, bool en
 #endif
   }
 
+  // Don't bother checking for maintenance 4/5 if we don't have 1-3, i.e. Vulkan 1.1.
+  if (m_device_properties.apiVersion >= VK_API_VERSION_1_1)
+  {
+    m_optional_extensions.vk_khr_maintenance4 = SupportsExtension(VK_KHR_MAINTENANCE_4_EXTENSION_NAME, false);
+    m_optional_extensions.vk_khr_maintenance5 =
+      m_optional_extensions.vk_khr_maintenance4 && SupportsExtension(VK_KHR_MAINTENANCE_4_EXTENSION_NAME, false);
+  }
+
   return true;
 }
 
@@ -710,6 +716,8 @@ void VulkanDevice::ProcessDeviceExtensions()
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT, nullptr, VK_FALSE};
   VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT fragment_shader_interlock_feature = {
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT, nullptr, VK_FALSE, VK_FALSE, VK_FALSE};
+  VkPhysicalDeviceMaintenance4Features maintenance4_features = {
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_FEATURES, nullptr, VK_FALSE};
 
   // add in optional feature structs
   if (m_optional_extensions.vk_ext_rasterization_order_attachment_access)
@@ -724,6 +732,8 @@ void VulkanDevice::ProcessDeviceExtensions()
     if (m_optional_extensions.vk_ext_fragment_shader_interlock)
       Vulkan::AddPointerToChain(&features2, &fragment_shader_interlock_feature);
   }
+  if (m_optional_extensions.vk_khr_maintenance5)
+    Vulkan::AddPointerToChain(&features2, &maintenance4_features);
 
   // we might not have VK_KHR_get_physical_device_properties2...
   if (!vkGetPhysicalDeviceFeatures2 || !vkGetPhysicalDeviceProperties2 || !vkGetPhysicalDeviceMemoryProperties2)
@@ -760,6 +770,8 @@ void VulkanDevice::ProcessDeviceExtensions()
   m_optional_extensions.vk_ext_fragment_shader_interlock &=
     (m_optional_extensions.vk_khr_dynamic_rendering &&
      fragment_shader_interlock_feature.fragmentShaderPixelInterlock == VK_TRUE);
+  m_optional_extensions.vk_khr_maintenance4 &= (maintenance4_features.maintenance4 == VK_TRUE);
+  m_optional_extensions.vk_khr_maintenance5 &= m_optional_extensions.vk_khr_maintenance4;
 
   VkPhysicalDeviceProperties2 properties2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, nullptr, {}};
   VkPhysicalDevicePushDescriptorPropertiesKHR push_descriptor_properties = {
@@ -788,28 +800,24 @@ void VulkanDevice::ProcessDeviceExtensions()
   m_optional_extensions.vk_ext_external_memory_host &=
     (external_memory_host_properties.minImportedHostPointerAlignment == HOST_PAGE_SIZE);
 
-  INFO_LOG("VK_EXT_external_memory_host is {}",
-           m_optional_extensions.vk_ext_external_memory_host ? "supported" : "NOT supported");
-  INFO_LOG("VK_EXT_memory_budget is {}", m_optional_extensions.vk_ext_memory_budget ? "supported" : "NOT supported");
-  INFO_LOG("VK_EXT_fragment_shader_interlock is {}",
-           m_optional_extensions.vk_ext_fragment_shader_interlock ? "supported" : "NOT supported");
-  INFO_LOG("VK_EXT_rasterization_order_attachment_access is {}",
-           m_optional_extensions.vk_ext_rasterization_order_attachment_access ? "supported" : "NOT supported");
-  INFO_LOG("VK_EXT_swapchain_maintenance1 is {}",
-           m_optional_extensions.vk_ext_swapchain_maintenance1 ? "supported" : "NOT supported");
-  INFO_LOG("VK_KHR_get_memory_requirements2 is {}",
-           m_optional_extensions.vk_khr_get_memory_requirements2 ? "supported" : "NOT supported");
-  INFO_LOG("VK_KHR_bind_memory2 is {}", m_optional_extensions.vk_khr_bind_memory2 ? "supported" : "NOT supported");
-  INFO_LOG("VK_KHR_get_physical_device_properties2 is {}",
-           m_optional_extensions.vk_khr_get_physical_device_properties2 ? "supported" : "NOT supported");
-  INFO_LOG("VK_KHR_dedicated_allocation is {}",
-           m_optional_extensions.vk_khr_dedicated_allocation ? "supported" : "NOT supported");
-  INFO_LOG("VK_KHR_dynamic_rendering is {}",
-           m_optional_extensions.vk_khr_dynamic_rendering ? "supported" : "NOT supported");
-  INFO_LOG("VK_KHR_dynamic_rendering_local_read is {}",
-           m_optional_extensions.vk_khr_dynamic_rendering_local_read ? "supported" : "NOT supported");
-  INFO_LOG("VK_KHR_push_descriptor is {}",
-           m_optional_extensions.vk_khr_push_descriptor ? "supported" : "NOT supported");
+#define LOG_EXT(name, field) INFO_LOG(name " is {}", m_optional_extensions.field ? "supported" : "NOT supported")
+
+  LOG_EXT("VK_EXT_external_memory_host", vk_ext_external_memory_host);
+  LOG_EXT("VK_EXT_memory_budget", vk_ext_memory_budget);
+  LOG_EXT("VK_EXT_fragment_shader_interlock", vk_ext_fragment_shader_interlock);
+  LOG_EXT("VK_EXT_rasterization_order_attachment_access", vk_ext_rasterization_order_attachment_access);
+  LOG_EXT("VK_EXT_swapchain_maintenance1", vk_ext_swapchain_maintenance1);
+  LOG_EXT("VK_KHR_get_memory_requirements2", vk_khr_get_memory_requirements2);
+  LOG_EXT("VK_KHR_bind_memory2", vk_khr_bind_memory2);
+  LOG_EXT("VK_KHR_get_physical_device_properties2", vk_khr_get_physical_device_properties2);
+  LOG_EXT("VK_KHR_dedicated_allocation", vk_khr_dedicated_allocation);
+  LOG_EXT("VK_KHR_dynamic_rendering", vk_khr_dynamic_rendering);
+  LOG_EXT("VK_KHR_dynamic_rendering_local_read", vk_khr_dynamic_rendering_local_read);
+  LOG_EXT("VK_KHR_maintenance4", vk_khr_maintenance4);
+  LOG_EXT("VK_KHR_maintenance5", vk_khr_maintenance5);
+  LOG_EXT("VK_KHR_push_descriptor", vk_khr_push_descriptor);
+
+#undef LOG_EXT
 }
 
 bool VulkanDevice::CreateAllocator()
@@ -845,6 +853,18 @@ bool VulkanDevice::CreateAllocator()
   {
     DEV_LOG("Enabling VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT.");
     ci.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+  }
+
+  if (m_optional_extensions.vk_khr_maintenance4)
+  {
+    DEV_LOG("Enabling VMA_ALLOCATOR_CREATE_KHR_MAINTENANCE4_BIT");
+    ci.flags |= VMA_ALLOCATOR_CREATE_KHR_MAINTENANCE4_BIT;
+  }
+
+  if (m_optional_extensions.vk_khr_maintenance5)
+  {
+    DEV_LOG("Enabling VMA_ALLOCATOR_CREATE_KHR_MAINTENANCE5_BIT");
+    ci.flags |= VMA_ALLOCATOR_CREATE_KHR_MAINTENANCE5_BIT;
   }
 
   // Limit usage of the DEVICE_LOCAL upload heap when we're using a debug device.
@@ -1248,7 +1268,6 @@ void VulkanDevice::WaitForFenceCounter(u64 fence_counter)
 
 void VulkanDevice::WaitForGPUIdle()
 {
-  WaitForPresentComplete();
   vkDeviceWaitIdle(m_device);
 }
 
@@ -1267,12 +1286,8 @@ bool VulkanDevice::SetGPUTimingEnabled(bool enabled)
 
 void VulkanDevice::WaitForCommandBufferCompletion(u32 index)
 {
-  // We might be waiting for the buffer we just submitted to the worker thread.
-  if (m_queued_present.command_buffer_index == index && !m_present_done.load(std::memory_order_acquire))
-  {
-    WARNING_LOG("Waiting for threaded submission of cmdbuffer {}", index);
-    WaitForPresentComplete();
-  }
+  if (m_device_was_lost)
+    return;
 
   // Wait for this command buffer to be completed.
   static constexpr u32 MAX_TIMEOUTS = 10;
@@ -1291,7 +1306,7 @@ void VulkanDevice::WaitForCommandBufferCompletion(u32 index)
     else if (res != VK_SUCCESS)
     {
       LOG_VULKAN_ERROR(res, TinyString::from_format("vkWaitForFences() for cmdbuffer {} failed: ", index));
-      m_last_submit_failed.store(true, std::memory_order_release);
+      m_device_was_lost = true;
       return;
     }
   }
@@ -1343,10 +1358,9 @@ void VulkanDevice::WaitForCommandBufferCompletion(u32 index)
   }
 }
 
-void VulkanDevice::EndAndSubmitCommandBuffer(VulkanSwapChain* present_swap_chain, bool explicit_present,
-                                             bool submit_on_thread)
+void VulkanDevice::EndAndSubmitCommandBuffer(VulkanSwapChain* present_swap_chain, bool explicit_present)
 {
-  if (m_last_submit_failed.load(std::memory_order_acquire))
+  if (m_device_was_lost) [[unlikely]]
     return;
 
   CommandBuffer& resources = m_frame_resources[m_current_frame];
@@ -1379,27 +1393,6 @@ void VulkanDevice::EndAndSubmitCommandBuffer(VulkanSwapChain* present_swap_chain
   // This command buffer now has commands, so can't be re-used without waiting.
   resources.needs_fence_wait = true;
 
-  std::unique_lock<std::mutex> lock(m_present_mutex);
-  WaitForPresentComplete(lock);
-
-  if (!submit_on_thread || explicit_present || !m_present_thread.joinable())
-  {
-    DoSubmitCommandBuffer(m_current_frame, present_swap_chain);
-    if (present_swap_chain && !explicit_present)
-      DoPresent(present_swap_chain);
-    return;
-  }
-
-  m_queued_present.command_buffer_index = m_current_frame;
-  m_queued_present.swap_chain = present_swap_chain;
-  m_present_done.store(false, std::memory_order_release);
-  m_present_queued_cv.notify_one();
-}
-
-void VulkanDevice::DoSubmitCommandBuffer(u32 index, VulkanSwapChain* present_swap_chain)
-{
-  CommandBuffer& resources = m_frame_resources[index];
-
   uint32_t wait_bits = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
   VkSubmitInfo submit_info = {VK_STRUCTURE_TYPE_SUBMIT_INFO,
                               nullptr,
@@ -1422,16 +1415,19 @@ void VulkanDevice::DoSubmitCommandBuffer(u32 index, VulkanSwapChain* present_swa
     submit_info.signalSemaphoreCount = 1;
   }
 
-  const VkResult res = vkQueueSubmit(m_graphics_queue, 1, &submit_info, resources.fence);
+  res = vkQueueSubmit(m_graphics_queue, 1, &submit_info, resources.fence);
   if (res != VK_SUCCESS)
   {
     LOG_VULKAN_ERROR(res, "vkQueueSubmit failed: ");
-    m_last_submit_failed.store(true, std::memory_order_release);
+    m_device_was_lost = true;
     return;
   }
+
+  if (present_swap_chain && !explicit_present)
+    QueuePresent(present_swap_chain);
 }
 
-void VulkanDevice::DoPresent(VulkanSwapChain* present_swap_chain)
+void VulkanDevice::QueuePresent(VulkanSwapChain* present_swap_chain)
 {
   const VkPresentInfoKHR present_info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                                          nullptr,
@@ -1460,65 +1456,6 @@ void VulkanDevice::DoPresent(VulkanSwapChain* present_swap_chain)
   // submission. Don't care if it fails, we'll deal with that at the presentation call site.
   // Credit to dxvk for the idea.
   present_swap_chain->AcquireNextImage();
-}
-
-void VulkanDevice::WaitForPresentComplete()
-{
-  if (m_present_done.load(std::memory_order_acquire))
-    return;
-
-  std::unique_lock<std::mutex> lock(m_present_mutex);
-  WaitForPresentComplete(lock);
-}
-
-void VulkanDevice::WaitForPresentComplete(std::unique_lock<std::mutex>& lock)
-{
-  if (m_present_done.load(std::memory_order_acquire))
-    return;
-
-  m_present_done_cv.wait(lock, [this]() { return m_present_done.load(std::memory_order_acquire); });
-}
-
-void VulkanDevice::PresentThread()
-{
-  std::unique_lock<std::mutex> lock(m_present_mutex);
-  while (!m_present_thread_done.load(std::memory_order_acquire))
-  {
-    m_present_queued_cv.wait(lock, [this]() {
-      return !m_present_done.load(std::memory_order_acquire) || m_present_thread_done.load(std::memory_order_acquire);
-    });
-
-    if (m_present_done.load(std::memory_order_acquire))
-      continue;
-
-    DoSubmitCommandBuffer(m_queued_present.command_buffer_index, m_queued_present.swap_chain);
-    if (m_queued_present.swap_chain)
-      DoPresent(m_queued_present.swap_chain);
-    m_present_done.store(true, std::memory_order_release);
-    m_present_done_cv.notify_one();
-  }
-}
-
-void VulkanDevice::StartPresentThread()
-{
-  DebugAssert(!m_present_thread.joinable());
-  m_present_thread_done.store(false, std::memory_order_release);
-  m_present_thread = std::thread(&VulkanDevice::PresentThread, this);
-}
-
-void VulkanDevice::StopPresentThread()
-{
-  if (!m_present_thread.joinable())
-    return;
-
-  {
-    std::unique_lock<std::mutex> lock(m_present_mutex);
-    WaitForPresentComplete(lock);
-    m_present_thread_done.store(true, std::memory_order_release);
-    m_present_queued_cv.notify_one();
-  }
-
-  m_present_thread.join();
 }
 
 void VulkanDevice::MoveToNextCommandBuffer()
@@ -1582,7 +1519,7 @@ void VulkanDevice::SubmitCommandBuffer(bool wait_for_completion)
   DebugAssert(!InRenderPass());
 
   const u32 current_frame = m_current_frame;
-  EndAndSubmitCommandBuffer(nullptr, false, false);
+  EndAndSubmitCommandBuffer(nullptr, false);
   MoveToNextCommandBuffer();
 
   if (wait_for_completion)
@@ -1607,11 +1544,6 @@ void VulkanDevice::SubmitCommandBufferAndRestartRenderPass(const std::string_vie
 
   SetPipeline(pl);
   BeginRenderPass();
-}
-
-bool VulkanDevice::CheckLastSubmitFail()
-{
-  return m_last_submit_failed.load(std::memory_order_acquire);
 }
 
 void VulkanDevice::DeferBufferDestruction(VkBuffer object, VmaAllocation allocation)
@@ -1957,19 +1889,13 @@ bool VulkanDevice::IsSuitableDefaultRenderer()
 #endif
 }
 
-RenderAPI VulkanDevice::GetRenderAPI() const
-{
-  return RenderAPI::Vulkan;
-}
-
 bool VulkanDevice::HasSurface() const
 {
   return static_cast<bool>(m_swap_chain);
 }
 
-bool VulkanDevice::CreateDevice(std::string_view adapter, bool threaded_presentation,
-                                std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features,
-                                Error* error)
+bool VulkanDevice::CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
+                                FeatureMask disabled_features, Error* error)
 {
   std::unique_lock lock(s_instance_mutex);
   bool enable_debug_utils = m_debug_device;
@@ -2077,9 +2003,6 @@ bool VulkanDevice::CreateDevice(std::string_view adapter, bool threaded_presenta
   if (!CreateAllocator() || !CreatePersistentDescriptorPool() || !CreateCommandBuffers() || !CreatePipelineLayouts())
     return false;
 
-  if (threaded_presentation)
-    StartPresentThread();
-
   m_exclusive_fullscreen_control = exclusive_fullscreen_control;
 
   if (surface != VK_NULL_HANDLE)
@@ -2128,7 +2051,6 @@ void VulkanDevice::DestroyDevice()
   if (m_device != VK_NULL_HANDLE)
     WaitForGPUIdle();
 
-  StopPresentThread();
   m_swap_chain.reset();
 
   if (m_null_texture)
@@ -2176,37 +2098,37 @@ void VulkanDevice::DestroyDevice()
   Vulkan::UnloadVulkanLibrary();
 }
 
-bool VulkanDevice::ValidatePipelineCacheHeader(const VK_PIPELINE_CACHE_HEADER& header)
+bool VulkanDevice::ValidatePipelineCacheHeader(const VK_PIPELINE_CACHE_HEADER& header, Error* error)
 {
   if (header.header_length < sizeof(VK_PIPELINE_CACHE_HEADER))
   {
-    ERROR_LOG("Pipeline cache failed validation: Invalid header length");
+    Error::SetStringView(error, "Invalid header length");
     return false;
   }
 
   if (header.header_version != VK_PIPELINE_CACHE_HEADER_VERSION_ONE)
   {
-    ERROR_LOG("Pipeline cache failed validation: Invalid header version");
+    Error::SetStringView(error, "Invalid header version");
     return false;
   }
 
   if (header.vendor_id != m_device_properties.vendorID)
   {
-    ERROR_LOG("Pipeline cache failed validation: Incorrect vendor ID (file: 0x{:X}, device: 0x{:X})", header.vendor_id,
-              m_device_properties.vendorID);
+    Error::SetStringFmt(error, "Incorrect vendor ID (file: 0x{:X}, device: 0x{:X})", header.vendor_id,
+                        m_device_properties.vendorID);
     return false;
   }
 
   if (header.device_id != m_device_properties.deviceID)
   {
-    ERROR_LOG("Pipeline cache failed validation: Incorrect device ID (file: 0x{:X}, device: 0x{:X})", header.device_id,
-              m_device_properties.deviceID);
+    Error::SetStringFmt(error, "Incorrect device ID (file: 0x{:X}, device: 0x{:X})", header.device_id,
+                        m_device_properties.deviceID);
     return false;
   }
 
   if (std::memcmp(header.uuid, m_device_properties.pipelineCacheUUID, VK_UUID_SIZE) != 0)
   {
-    ERROR_LOG("Pipeline cache failed validation: Incorrect UUID");
+    Error::SetStringView(error, "Incorrect UUID");
     return false;
   }
 
@@ -2222,43 +2144,46 @@ void VulkanDevice::FillPipelineCacheHeader(VK_PIPELINE_CACHE_HEADER* header)
   std::memcpy(header->uuid, m_device_properties.pipelineCacheUUID, VK_UUID_SIZE);
 }
 
-bool VulkanDevice::ReadPipelineCache(const std::string& filename)
+bool VulkanDevice::ReadPipelineCache(DynamicHeapArray<u8> data, Error* error)
 {
-  std::optional<std::vector<u8>> data;
-
-  auto fp = FileSystem::OpenManagedCFile(filename.c_str(), "rb");
-  if (fp)
+  if (data.size() < sizeof(VK_PIPELINE_CACHE_HEADER))
   {
-    data = FileSystem::ReadBinaryFile(fp.get());
-
-    if (data.has_value())
-    {
-      if (data->size() < sizeof(VK_PIPELINE_CACHE_HEADER))
-      {
-        ERROR_LOG("Pipeline cache at '{}' is too small", Path::GetFileName(filename));
-        return false;
-      }
-
-      VK_PIPELINE_CACHE_HEADER header;
-      std::memcpy(&header, data->data(), sizeof(header));
-      if (!ValidatePipelineCacheHeader(header))
-        data.reset();
-    }
+    Error::SetStringView(error, "Pipeline cache is too small.");
+    return false;
   }
 
-  const VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, nullptr, 0,
-                                     data.has_value() ? data->size() : 0, data.has_value() ? data->data() : nullptr};
+  // alignment reasons...
+  VK_PIPELINE_CACHE_HEADER header;
+  std::memcpy(&header, data.data(), sizeof(header));
+  if (!ValidatePipelineCacheHeader(header, error))
+    return false;
+
+  const VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, nullptr, 0, data.size(),
+                                     data.data()};
   VkResult res = vkCreatePipelineCache(m_device, &ci, nullptr, &m_pipeline_cache);
   if (res != VK_SUCCESS)
   {
-    LOG_VULKAN_ERROR(res, "vkCreatePipelineCache() failed: ");
+    Vulkan::SetErrorObject(error, "vkCreatePipelineCache() failed: ", res);
     return false;
   }
 
   return true;
 }
 
-bool VulkanDevice::GetPipelineCacheData(DynamicHeapArray<u8>* data)
+bool VulkanDevice::CreatePipelineCache(const std::string& path, Error* error)
+{
+  const VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, nullptr, 0, 0, nullptr};
+  VkResult res = vkCreatePipelineCache(m_device, &ci, nullptr, &m_pipeline_cache);
+  if (res != VK_SUCCESS)
+  {
+    Vulkan::SetErrorObject(error, "vkCreatePipelineCache() failed: ", res);
+    return false;
+  }
+
+  return true;
+}
+
+bool VulkanDevice::GetPipelineCacheData(DynamicHeapArray<u8>* data, Error* error)
 {
   if (m_pipeline_cache == VK_NULL_HANDLE)
     return false;
@@ -2267,7 +2192,7 @@ bool VulkanDevice::GetPipelineCacheData(DynamicHeapArray<u8>* data)
   VkResult res = vkGetPipelineCacheData(m_device, m_pipeline_cache, &data_size, nullptr);
   if (res != VK_SUCCESS)
   {
-    LOG_VULKAN_ERROR(res, "vkGetPipelineCacheData() failed: ");
+    Vulkan::SetErrorObject(error, "vkGetPipelineCacheData() failed: ", res);
     return false;
   }
 
@@ -2275,7 +2200,7 @@ bool VulkanDevice::GetPipelineCacheData(DynamicHeapArray<u8>* data)
   res = vkGetPipelineCacheData(m_device, m_pipeline_cache, &data_size, data->data());
   if (res != VK_SUCCESS)
   {
-    LOG_VULKAN_ERROR(res, "vkGetPipelineCacheData() (2) failed: ");
+    Vulkan::SetErrorObject(error, "vkGetPipelineCacheData() (2) failed: ", res);
     return false;
   }
 
@@ -2423,31 +2348,20 @@ void VulkanDevice::SetVSyncMode(GPUVSyncMode mode, bool allow_present_throttle)
   }
 }
 
-bool VulkanDevice::BeginPresent(bool frame_skip)
+GPUDevice::PresentResult VulkanDevice::BeginPresent(u32 clear_color)
 {
   if (InRenderPass())
     EndRenderPass();
 
-  if (frame_skip)
-    return false;
+  if (m_device_was_lost) [[unlikely]]
+    return PresentResult::DeviceLost;
 
   // If we're running surfaceless, kick the command buffer so we don't run out of descriptors.
   if (!m_swap_chain)
   {
     SubmitCommandBuffer(false);
     TrimTexturePool();
-    return false;
-  }
-
-  // Previous frame needs to be presented before we can acquire the swap chain.
-  WaitForPresentComplete();
-
-  // Check if the device was lost.
-  if (CheckLastSubmitFail())
-  {
-    Panic("Fixme"); // TODO
-    TrimTexturePool();
-    return false;
+    return PresentResult::SkipPresent;
   }
 
   VkResult res = m_swap_chain->AcquireNextImage();
@@ -2469,7 +2383,7 @@ bool VulkanDevice::BeginPresent(bool frame_skip)
         ERROR_LOG("Failed to recreate surface after loss");
         SubmitCommandBuffer(false);
         TrimTexturePool();
-        return false;
+        return PresentResult::SkipPresent;
       }
 
       res = m_swap_chain->AcquireNextImage();
@@ -2482,16 +2396,17 @@ bool VulkanDevice::BeginPresent(bool frame_skip)
       // Still submit the command buffer, otherwise we'll end up with several frames waiting.
       SubmitCommandBuffer(false);
       TrimTexturePool();
-      return false;
+      return PresentResult::SkipPresent;
     }
   }
 
-  BeginSwapChainRenderPass();
-  return true;
+  BeginSwapChainRenderPass(clear_color);
+  return PresentResult::OK;
 }
 
-void VulkanDevice::EndPresent(bool explicit_present)
+void VulkanDevice::EndPresent(bool explicit_present, u64 present_time)
 {
+  DebugAssert(present_time == 0);
   DebugAssert(InRenderPass() && m_num_current_render_targets == 0 && !m_current_depth_target);
   EndRenderPass();
 
@@ -2499,7 +2414,7 @@ void VulkanDevice::EndPresent(bool explicit_present)
   VulkanTexture::TransitionSubresourcesToLayout(cmdbuf, m_swap_chain->GetCurrentImage(), GPUTexture::Type::RenderTarget,
                                                 0, 1, 0, 1, VulkanTexture::Layout::ColorAttachment,
                                                 VulkanTexture::Layout::PresentSrc);
-  EndAndSubmitCommandBuffer(m_swap_chain.get(), explicit_present, !m_swap_chain->IsPresentModeSynchronizing());
+  EndAndSubmitCommandBuffer(m_swap_chain.get(), explicit_present);
   MoveToNextCommandBuffer();
   InvalidateCachedState();
   TrimTexturePool();
@@ -2508,7 +2423,10 @@ void VulkanDevice::EndPresent(bool explicit_present)
 void VulkanDevice::SubmitPresent()
 {
   DebugAssert(m_swap_chain);
-  DoPresent(m_swap_chain.get());
+  if (m_device_was_lost) [[unlikely]]
+    return;
+
+  QueuePresent(m_swap_chain.get());
 }
 
 #ifdef _DEBUG
@@ -2596,6 +2514,10 @@ u32 VulkanDevice::GetMaxMultisamples(VkPhysicalDevice physical_device, const VkP
 
 void VulkanDevice::SetFeatures(FeatureMask disabled_features, const VkPhysicalDeviceFeatures& vk_features)
 {
+  const u32 store_api_version = std::min(m_device_properties.apiVersion, VK_API_VERSION_1_1);
+  m_render_api = RenderAPI::Vulkan;
+  m_render_api_version = (VK_API_VERSION_MAJOR(store_api_version) * 100u) +
+                         (VK_API_VERSION_MINOR(store_api_version) * 10u) + (VK_API_VERSION_PATCH(store_api_version));
   m_max_texture_size =
     std::min(m_device_properties.limits.maxImageDimension2D, m_device_properties.limits.maxFramebufferWidth);
   m_max_multisamples = GetMaxMultisamples(m_physical_device, m_device_properties);
@@ -2634,6 +2556,7 @@ void VulkanDevice::SetFeatures(FeatureMask disabled_features, const VkPhysicalDe
   m_features.partial_msaa_resolve = true;
   m_features.memory_import = m_optional_extensions.vk_ext_external_memory_host;
   m_features.explicit_present = true;
+  m_features.timed_present = false;
   m_features.shader_cache = true;
   m_features.pipeline_cache = true;
   m_features.prefer_unused_textures = true;
@@ -3166,13 +3089,14 @@ void VulkanDevice::RenderBlankFrame()
 
   const VkImage image = m_swap_chain->GetCurrentImage();
   static constexpr VkImageSubresourceRange srr = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  static constexpr VkClearColorValue clear_color = {{0.0f, 0.0f, 0.0f, 1.0f}};
   VulkanTexture::TransitionSubresourcesToLayout(cmdbuf, image, GPUTexture::Type::RenderTarget, 0, 1, 0, 1,
                                                 VulkanTexture::Layout::Undefined, VulkanTexture::Layout::TransferDst);
-  vkCmdClearColorImage(cmdbuf, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &s_present_clear_color.color, 1, &srr);
+  vkCmdClearColorImage(cmdbuf, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &srr);
   VulkanTexture::TransitionSubresourcesToLayout(cmdbuf, image, GPUTexture::Type::RenderTarget, 0, 1, 0, 1,
                                                 VulkanTexture::Layout::TransferDst, VulkanTexture::Layout::PresentSrc);
 
-  EndAndSubmitCommandBuffer(m_swap_chain.get(), false, !m_swap_chain->IsPresentModeSynchronizing());
+  EndAndSubmitCommandBuffer(m_swap_chain.get(), false);
   MoveToNextCommandBuffer();
 
   InvalidateCachedState();
@@ -3527,7 +3451,7 @@ void VulkanDevice::BeginRenderPass()
     SetInitialPipelineState();
 }
 
-void VulkanDevice::BeginSwapChainRenderPass()
+void VulkanDevice::BeginSwapChainRenderPass(u32 clear_color)
 {
   DebugAssert(!InRenderPass());
 
@@ -3547,18 +3471,20 @@ void VulkanDevice::BeginSwapChainRenderPass()
       m_current_textures[i]->TransitionToLayout(VulkanTexture::Layout::ShaderReadOnly);
   }
 
+  VkClearValue clear_value;
+  GSVector4::store<false>(&clear_value.color.float32, GSVector4::rgba32(clear_color));
   if (m_optional_extensions.vk_khr_dynamic_rendering)
   {
-    const VkRenderingAttachmentInfo ai = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
-                                          nullptr,
-                                          m_swap_chain->GetCurrentImageView(),
-                                          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                          VK_RESOLVE_MODE_NONE_KHR,
-                                          VK_NULL_HANDLE,
-                                          VK_IMAGE_LAYOUT_UNDEFINED,
-                                          VK_ATTACHMENT_LOAD_OP_CLEAR,
-                                          VK_ATTACHMENT_STORE_OP_STORE,
-                                          s_present_clear_color};
+    VkRenderingAttachmentInfo ai = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
+                                    nullptr,
+                                    m_swap_chain->GetCurrentImageView(),
+                                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                    VK_RESOLVE_MODE_NONE_KHR,
+                                    VK_NULL_HANDLE,
+                                    VK_IMAGE_LAYOUT_UNDEFINED,
+                                    VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                    VK_ATTACHMENT_STORE_OP_STORE,
+                                    clear_value};
 
     const VkRenderingInfoKHR ri = {VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
                                    nullptr,
@@ -3586,7 +3512,7 @@ void VulkanDevice::BeginSwapChainRenderPass()
                                       m_swap_chain->GetCurrentFramebuffer(),
                                       {{0, 0}, {m_swap_chain->GetWidth(), m_swap_chain->GetHeight()}},
                                       1u,
-                                      &s_present_clear_color};
+                                      &clear_value};
     vkCmdBeginRenderPass(GetCurrentCommandBuffer(), &rp, VK_SUBPASS_CONTENTS_INLINE);
   }
 
@@ -3760,7 +3686,7 @@ void VulkanDevice::UnbindTexture(VulkanTexture* tex)
     }
   }
 
-  if (tex->IsRenderTarget() || tex->IsDepthStencil())
+  if (tex->IsRenderTarget() || tex->IsRWTexture())
   {
     for (u32 i = 0; i < m_num_current_render_targets; i++)
     {

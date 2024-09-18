@@ -1,12 +1,11 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
-#include "small_string.h"
 #include "types.h"
 
-#include "fmt/core.h"
+#include "fmt/base.h"
 
 #include <string>
 #include <string_view>
@@ -32,6 +31,7 @@ public:
   ALWAYS_INLINE Type GetType() const { return m_type; }
   ALWAYS_INLINE bool IsValid() const { return (m_type != Type::None); }
   ALWAYS_INLINE const std::string& GetDescription() const { return m_description; }
+  ALWAYS_INLINE std::string TakeDescription() { return std::move(m_description); }
 
   void Clear();
 
@@ -83,54 +83,52 @@ public:
   static void SetHResult(Error* errptr, std::string_view prefix, long err);
 #endif
 
+  template<typename... T>
+  void SetStringFmt(fmt::format_string<T...> fmt, T&&... args)
+  {
+    SetStringFmtArgs(fmt, fmt::make_format_args(args...));
+  }
+
+  void AddPrefix(std::string_view prefix);
+
+  template<typename... T>
+  void AddPrefixFmt(fmt::format_string<T...> fmt, T&&... args)
+  {
+    AddPrefixFmtArgs(fmt, fmt::make_format_args(args...));
+  }
+
+  void AddSuffix(std::string_view suffix);
+
+  template<typename... T>
+  void AddSuffixFmt(fmt::format_string<T...> fmt, T&&... args)
+  {
+    AddSuffixFmtArgs(fmt, fmt::make_format_args(args...));
+  }
+
   /// Sets a formatted message.
   template<typename... T>
   static void SetStringFmt(Error* errptr, fmt::format_string<T...> fmt, T&&... args)
   {
     if (errptr)
-      Error::SetString(errptr, fmt::vformat(fmt, fmt::make_format_args(args...)));
+      errptr->SetStringFmtArgs(fmt, fmt::make_format_args(args...));
   }
 
-  void AddPrefix(std::string_view prefix);
-  void AddSuffix(std::string_view suffix);
   static void AddPrefix(Error* errptr, std::string_view prefix);
-  static void AddSuffix(Error* errptr, std::string_view prefix);
-
-  template<typename... T>
-  void AddPrefixFmt(fmt::format_string<T...> fmt, T&&... args)
-  {
-    TinyString str;
-    fmt::vformat_to(std::back_inserter(str), fmt, fmt::make_format_args(args...));
-    AddPrefix(str.view());
-  }
-
-  template<typename... T>
-  void AddSuffixFmt(fmt::format_string<T...> fmt, T&&... args)
-  {
-    TinyString str;
-    fmt::vformat_to(std::back_inserter(str), fmt, fmt::make_format_args(args...));
-    AddSuffix(str.view());
-  }
 
   template<typename... T>
   static void AddPrefixFmt(Error* errptr, fmt::format_string<T...> fmt, T&&... args)
   {
     if (errptr)
-    {
-      TinyString str;
-      fmt::vformat_to(std::back_inserter(str), fmt, fmt::make_format_args(args...));
-      errptr->AddPrefix(str.view());
-    }
+      errptr->AddPrefixFmtArgs(fmt, fmt::make_format_args(args...));
   }
+
+  static void AddSuffix(Error* errptr, std::string_view prefix);
+
   template<typename... T>
   static void AddSuffixFmt(Error* errptr, fmt::format_string<T...> fmt, T&&... args)
   {
     if (errptr)
-    {
-      TinyString str;
-      fmt::vformat_to(std::back_inserter(str), fmt, fmt::make_format_args(args...));
-      errptr->AddSuffix(str.view());
-    }
+      errptr->AddSuffixFmtArgs(fmt, fmt::make_format_args(args...));
   }
 
   Error& operator=(const Error& e);
@@ -139,6 +137,10 @@ public:
   bool operator!=(const Error& e) const;
 
 private:
+  void SetStringFmtArgs(fmt::string_view fmt, fmt::format_args args);
+  void AddPrefixFmtArgs(fmt::string_view fmt, fmt::format_args args);
+  void AddSuffixFmtArgs(fmt::string_view fmt, fmt::format_args args);
+
   Type m_type = Type::None;
   std::string m_description;
 };

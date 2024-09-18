@@ -1,11 +1,13 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
+
 #include "common/bitfield.h"
 #include "common/bitutils.h"
 #include "common/progress_callback.h"
 #include "common/types.h"
+
 #include <array>
 #include <memory>
 #include <string>
@@ -28,6 +30,8 @@ public:
     DATA_SECTOR_SIZE = 2048,
     SECTOR_SYNC_SIZE = 12,
     SECTOR_HEADER_SIZE = 4,
+    MODE1_HEADER_SIZE = 4,
+    MODE2_HEADER_SIZE = 12,
     FRAMES_PER_SECOND = 75, // "sectors", or "timecode frames" (not "channel frames")
     SECONDS_PER_MINUTE = 60,
     FRAMES_PER_MINUTE = FRAMES_PER_SECOND * SECONDS_PER_MINUTE,

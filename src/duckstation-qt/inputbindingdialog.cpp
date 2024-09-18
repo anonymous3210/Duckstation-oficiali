@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "inputbindingdialog.h"
 #include "controllersettingwidgetbinder.h"
@@ -8,6 +8,8 @@
 #include "qtutils.h"
 
 #include "common/bitutils.h"
+
+#include "fmt/format.h"
 
 #include <QtCore/QTimer>
 #include <QtGui/QKeyEvent>
@@ -269,6 +271,8 @@ void InputBindingDialog::saveListToSettings()
     else
       Host::DeleteBaseSettingValue(m_section_name.c_str(), m_key_name.c_str());
     Host::CommitBaseSettingChanges();
+    if (m_bind_type == InputBindingInfo::Type::Pointer)
+      g_emu_thread->updateControllerSettings();
     g_emu_thread->reloadInputBindings();
   }
 }

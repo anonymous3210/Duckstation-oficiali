@@ -38,7 +38,6 @@
     <ClCompile Include="guncon.cpp" />
     <ClCompile Include="playstation_mouse.cpp" />
     <ClCompile Include="negcon.cpp" />
-    <ClCompile Include="resources.cpp" />
     <ClCompile Include="host_interface_progress_callback.cpp" />
     <ClCompile Include="cpu_pgxp.cpp" />
     <ClCompile Include="cheats.cpp" />
@@ -68,6 +67,8 @@
     <ClCompile Include="justifier.cpp" />
     <ClCompile Include="pine_server.cpp" />
     <ClCompile Include="gdb_server.cpp" />
+    <ClCompile Include="gpu_sw_rasterizer.cpp" />
+    <ClCompile Include="gpu_sw_rasterizer_avx2.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="types.h" />
@@ -107,7 +108,6 @@
     <ClInclude Include="guncon.h" />
     <ClInclude Include="playstation_mouse.h" />
     <ClInclude Include="negcon.h" />
-    <ClInclude Include="resources.h" />
     <ClInclude Include="host_interface_progress_callback.h" />
     <ClInclude Include="gte_types.h" />
     <ClInclude Include="cpu_pgxp.h" />
@@ -142,5 +142,9 @@
     <ClInclude Include="justifier.h" />
     <ClInclude Include="pine_server.h" />
     <ClInclude Include="gdb_server.h" />
+    <ClInclude Include="gpu_sw_rasterizer.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="gpu_sw_rasterizer.inl" />
   </ItemGroup>
 </Project>

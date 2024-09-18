@@ -56,9 +56,15 @@ APPDIRNAME=DuckStation.AppDir
 STRIP=strip
 
 declare -a MANUAL_LIBS=(
+	"libavcodec.so.61"
+	"libavformat.so.61"
+	"libavutil.so.59"
+	"libswscale.so.8"
+	"libswresample.so.5"
 	"libdiscord-rpc.so"
-	"libshaderc_shared.so"
-	"libspirv-cross-c-shared.so.0.61.0"
+	"libfreetype.so.6"
+	"libshaderc_ds.so"
+	"libspirv-cross-c-shared.so.0"
 )
 
 declare -a MANUAL_QT_LIBS=(
@@ -82,22 +88,26 @@ set -e
 LINUXDEPLOY=./linuxdeploy-x86_64
 LINUXDEPLOY_PLUGIN_QT=./linuxdeploy-plugin-qt-x86_64
 APPIMAGETOOL=./appimagetool-x86_64
+APPIMAGERUNTIME=./runtime-x86_64
 PATCHELF=patchelf
 
 if [ ! -f "$LINUXDEPLOY" ]; then
-	retry_command wget -O "$LINUXDEPLOY" https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+	retry_command wget -O "$LINUXDEPLOY" https://github.com/stenzek/duckstation-ext-qt-minimal/releases/download/linux/linuxdeploy-x86_64.AppImage
 	chmod +x "$LINUXDEPLOY"
 fi
 
 if [ ! -f "$LINUXDEPLOY_PLUGIN_QT" ]; then
-	retry_command wget -O "$LINUXDEPLOY_PLUGIN_QT" https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+	retry_command wget -O "$LINUXDEPLOY_PLUGIN_QT" https://github.com/stenzek/duckstation-ext-qt-minimal/releases/download/linux/linuxdeploy-plugin-qt-x86_64.AppImage
 	chmod +x "$LINUXDEPLOY_PLUGIN_QT"
 fi
 
 if [ ! -f "$APPIMAGETOOL" ]; then
-	APPIMAGETOOLURL=$(wget -q https://api.github.com/repos/probonopd/go-appimage/releases -O - | sed 's/[()",{} ]/\n/g' | grep -o 'https.*continuous.*tool.*86_64.*mage$' | head -1)
-	retry_command wget -O "$APPIMAGETOOL" "$APPIMAGETOOLURL"
+	retry_command wget -O "$APPIMAGETOOL" https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
 	chmod +x "$APPIMAGETOOL"
+fi
+
+if [ ! -f "$APPIMAGERUNTIME" ]; then
+	retry_command wget -O "$APPIMAGERUNTIME" https://github.com/stenzek/type2-runtime/releases/download/continuous/runtime-x86_64
 fi
 
 OUTDIR=$(realpath "./$APPDIRNAME")
@@ -208,4 +218,4 @@ done
 
 echo "Generating AppImage..."
 rm -f "$NAME.AppImage"
-ARCH=x86_64 VERSION=test "$APPIMAGETOOL" -s "$OUTDIR" && mv ./*.AppImage "$NAME.AppImage"
+"$APPIMAGETOOL" -v --runtime-file "$APPIMAGERUNTIME" "$OUTDIR" "$NAME.AppImage"

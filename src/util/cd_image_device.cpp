@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "assert.h"
 #include "cd_image.h"
@@ -13,6 +13,8 @@
 #include "common/path.h"
 #include "common/small_string.h"
 #include "common/string_util.h"
+
+#include "fmt/format.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -383,7 +385,7 @@ bool CDImageDeviceWin32::Open(const char* filename, Error* error)
   if (m_tracks.empty())
   {
     ERROR_LOG("File '{}' contains no tracks", filename);
-    Error::SetString(error, fmt::format("File '{}' contains no tracks", filename));
+    Error::SetStringFmt(error, "File '{}' contains no tracks", filename);
     return false;
   }
 

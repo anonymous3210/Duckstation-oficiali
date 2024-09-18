@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -68,10 +68,6 @@ public:
   {
     return &m_semaphores[m_current_semaphore].rendering_finished_semaphore;
   }
-
-  // Returns true if the current present mode is synchronizing (adaptive or hard).
-  ALWAYS_INLINE bool IsPresentModeSynchronizing() const { return (m_present_mode == VK_PRESENT_MODE_FIFO_KHR); }
-  ALWAYS_INLINE VkPresentModeKHR GetPresentMode() const { return m_present_mode; }
 
   VkResult AcquireNextImage();
   void ReleaseCurrentImage();

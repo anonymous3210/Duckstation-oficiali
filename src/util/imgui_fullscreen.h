@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+class RGBA8Image;
 class GPUTexture;
 class SmallStringBase;
 
@@ -42,7 +43,6 @@ static constexpr float LAYOUT_HORIZONTAL_MENU_HEIGHT = 320.0f;
 static constexpr float LAYOUT_HORIZONTAL_MENU_PADDING = 30.0f;
 static constexpr float LAYOUT_HORIZONTAL_MENU_ITEM_WIDTH = 250.0f;
 
-extern ImFont* g_standard_font;
 extern ImFont* g_medium_font;
 extern ImFont* g_large_font;
 
@@ -120,7 +120,8 @@ ImRect CenterImage(const ImRect& fit_rect, const ImVec2& image_size);
 bool Initialize(const char* placeholder_image_path);
 
 void SetTheme(bool light);
-void SetFonts(ImFont* standard_font, ImFont* medium_font, ImFont* large_font);
+void SetSmoothScrolling(bool enabled);
+void SetFonts(ImFont* medium_font, ImFont* large_font);
 bool UpdateLayoutScale();
 
 /// Shuts down, clearing all state.
@@ -128,6 +129,7 @@ void Shutdown();
 
 /// Texture cache.
 const std::shared_ptr<GPUTexture>& GetPlaceholderTexture();
+std::unique_ptr<GPUTexture> CreateTextureFromImage(const RGBA8Image& image);
 std::shared_ptr<GPUTexture> LoadTexture(std::string_view path);
 GPUTexture* GetCachedTexture(std::string_view name);
 GPUTexture* GetCachedTextureAsync(std::string_view name);
@@ -140,9 +142,19 @@ void EndLayout();
 void PushResetLayout();
 void PopResetLayout();
 
-void QueueResetFocus();
+enum class FocusResetType : u8
+{
+  None,
+  PopupOpened,
+  PopupClosed,
+  ViewChanged,
+  Other,
+};
+void QueueResetFocus(FocusResetType type);
 bool ResetFocusHere();
 bool IsFocusResetQueued();
+bool IsFocusResetFromWindowChange();
+FocusResetType GetQueuedFocusResetType();
 void ForceKeyNavEnabled();
 
 bool WantsToCloseMenu();
@@ -189,6 +201,10 @@ void MenuHeading(const char* title, bool draw_line = true);
 bool MenuHeadingButton(const char* title, const char* value = nullptr, bool enabled = true, bool draw_line = true);
 bool ActiveButton(const char* title, bool is_active, bool enabled = true,
                   float height = LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY, ImFont* font = g_large_font);
+bool DefaultActiveButton(const char* title, bool is_active, bool enabled = true,
+                         float height = LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY, ImFont* font = g_large_font);
+bool ActiveButtonWithRightText(const char* title, const char* right_title, bool is_active, bool enabled = true,
+                               float height = LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY, ImFont* font = g_large_font);
 bool MenuButton(const char* title, const char* summary, bool enabled = true, float height = LAYOUT_MENU_BUTTON_HEIGHT,
                 ImFont* font = g_large_font, ImFont* summary_font = g_medium_font);
 bool MenuButtonWithoutSummary(const char* title, bool enabled = true,

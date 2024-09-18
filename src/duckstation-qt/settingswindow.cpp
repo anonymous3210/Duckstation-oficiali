@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "settingswindow.h"
 #include "advancedsettingswidget.h"
@@ -79,7 +79,7 @@ void SettingsWindow::closeEvent(QCloseEvent* event)
 void SettingsWindow::addPages()
 {
   addWidget(
-    m_general_settings = new InterfaceSettingsWidget(this, m_ui.settingsContainer), tr("Interface"),
+    m_interface_settings = new InterfaceSettingsWidget(this, m_ui.settingsContainer), tr("Interface"),
     QStringLiteral("settings-3-line"),
     tr("<strong>Interface Settings</strong><hr>These options control how the emulator looks and "
        "behaves.<br><br>Mouse over an option for additional information, and Shift+Wheel to scroll this panel."));
@@ -122,7 +122,9 @@ void SettingsWindow::addPages()
     m_post_processing_settings = new PostProcessingSettingsWidget(this, m_ui.settingsContainer), tr("Post-Processing"),
     QStringLiteral("sun-fill"),
     tr("<strong>Post-Processing Settings</strong><hr>Post processing allows you to alter the appearance of the image "
-       "displayed on the screen with various filters. Shaders will be executed in sequence."));
+       "displayed on the screen with various filters. Shaders will be executed in sequence. Additional shaders can be "
+       "downloaded from <a href=\"%1\">%1</a>.")
+      .arg("https://github.com/duckstation/shaders"));
   addWidget(
     m_audio_settings = new AudioSettingsWidget(this, m_ui.settingsContainer), tr("Audio"),
     QStringLiteral("volume-up-line"),
@@ -209,6 +211,7 @@ void SettingsWindow::connectUi()
   m_ui.settingsCategory->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
   m_ui.settingsCategory->setCurrentRow(0);
   m_ui.settingsContainer->setCurrentIndex(0);
+  m_ui.helpText->setOpenExternalLinks(true);
   m_ui.helpText->setText(m_category_help_text[0]);
   connect(m_ui.settingsCategory, &QListWidget::currentRowChanged, this, &SettingsWindow::onCategoryCurrentRowChanged);
   connect(m_ui.close, &QPushButton::clicked, this, &SettingsWindow::close);
@@ -250,6 +253,16 @@ void SettingsWindow::setCategory(const char* category)
   }
 }
 
+int SettingsWindow::getCategoryRow() const
+{
+  return m_ui.settingsCategory->currentRow();
+}
+
+void SettingsWindow::setCategoryRow(int index)
+{
+  m_ui.settingsCategory->setCurrentRow(index);
+}
+
 void SettingsWindow::onCategoryCurrentRowChanged(int row)
 {
   DebugAssert(row < static_cast<int>(MAX_SETTINGS_WIDGETS));
@@ -286,7 +299,7 @@ void SettingsWindow::onCopyGlobalSettingsClicked()
   {
     auto lock = Host::GetSettingsLock();
     Settings temp;
-    temp.Load(*Host::Internal::GetBaseSettingsLayer());
+    temp.Load(*Host::Internal::GetBaseSettingsLayer(), *Host::Internal::GetBaseSettingsLayer());
     temp.Save(*m_sif.get(), true);
   }
   saveAndReloadGameSettings();

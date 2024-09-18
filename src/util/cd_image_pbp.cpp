@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com> and contributors.
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cd_image.h"
 #include "cd_subchannel_replacement.h"
@@ -11,6 +11,7 @@
 #include "common/path.h"
 #include "common/string_util.h"
 
+#include "fmt/format.h"
 #include "zlib.h"
 
 #include <array>
@@ -509,7 +510,7 @@ bool CDImagePBP::OpenDisc(u32 index, Error* error)
   if (index >= m_disc_offsets.size())
   {
     ERROR_LOG("File does not contain disc {}", index + 1);
-    Error::SetString(error, fmt::format("File does not contain disc {}", index + 1));
+    Error::SetStringFmt(error, "File does not contain disc {}", index + 1);
     return false;
   }
 

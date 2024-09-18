@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -89,8 +89,11 @@ public:
   /// Returns analog input bytes packed as a u32. Values are specific to controller type.
   virtual std::optional<u32> GetAnalogInputBytes() const;
 
+  /// Returns the colour to use in the input overlay.
+  virtual u32 GetInputOverlayIconColor() const;
+
   /// Loads/refreshes any per-controller settings.
-  virtual void LoadSettings(SettingsInterface& si, const char* section);
+  virtual void LoadSettings(SettingsInterface& si, const char* section, bool initial);
 
   /// Creates a new controller of the specified type.
   static std::unique_ptr<Controller> Create(ControllerType type, u32 index);
@@ -131,5 +134,8 @@ public:
   static bool InCircularDeadzone(float deadzone, float pos_x, float pos_y);
 
 protected:
+  /// Returns true if automatic analog mode can be used.
+  static bool CanStartInAnalogMode(ControllerType ctype);
+
   u32 m_index;
 };

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com> and contributors.
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cheatmanagerwindow.h"
 #include "cheatcodeeditordialog.h"
@@ -28,6 +28,8 @@
 CheatManagerWindow::CheatManagerWindow() : QWidget()
 {
   m_ui.setupUi(this);
+
+  QtUtils::RestoreWindowGeometry("CheatManagerWindow", this);
 
   connectUi();
 
@@ -63,6 +65,7 @@ void CheatManagerWindow::showEvent(QShowEvent* event)
 
 void CheatManagerWindow::closeEvent(QCloseEvent* event)
 {
+  QtUtils::SaveWindowGeometry("CheatManagerWindow", this);
   QWidget::closeEvent(event);
   emit closed();
 }

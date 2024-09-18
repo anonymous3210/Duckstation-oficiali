@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "d3d12_texture.h"
 #include "d3d12_builders.h"
@@ -996,9 +996,15 @@ void D3D12DownloadTexture::Flush()
 
   // Need to execute command buffer.
   if (dev.GetCurrentFenceValue() == m_copy_fence_value)
+  {
+    if (dev.InRenderPass())
+      dev.EndRenderPass();
     dev.SubmitCommandList(true);
+  }
   else
+  {
     dev.WaitForFence(m_copy_fence_value);
+  }
 }
 
 void D3D12DownloadTexture::SetDebugName(std::string_view name)

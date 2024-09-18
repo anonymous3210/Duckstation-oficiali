@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "gpu_hw.h"
 #include "cpu_core.h"
@@ -21,8 +21,10 @@
 #include "common/log.h"
 #include "common/scoped_guard.h"
 #include "common/string_util.h"
+#include "common/timer.h"
 
 #include "IconsFontAwesome5.h"
+#include "IconsEmoji.h"
 #include "imgui.h"
 
 #include <cmath>
@@ -339,11 +341,13 @@ bool GPU_HW::DoState(StateWrapper& sw, GPUTexture** host_texture, bool update_di
       {
         delete tex;
 
-        tex =
-          g_gpu_device
-            ->FetchTexture(m_vram_texture->GetWidth(), m_vram_texture->GetHeight(), 1, 1, m_vram_texture->GetSamples(),
-                           GPUTexture::Type::RenderTarget, GPUTexture::Format::RGBA8, nullptr, 0)
-            .release();
+        // We copy to/from the save state texture, but we can't have multisampled non-RTs.
+        tex = g_gpu_device
+                ->FetchTexture(
+                  m_vram_texture->GetWidth(), m_vram_texture->GetHeight(), 1, 1, m_vram_texture->GetSamples(),
+                  m_vram_texture->IsMultisampled() ? GPUTexture::Type::RenderTarget : GPUTexture::Type::Texture,
+                  GPUTexture::Format::RGBA8, nullptr, 0)
+                .release();
         *host_texture = tex;
         if (!tex)
           return false;
@@ -527,7 +531,7 @@ void GPU_HW::CheckSettings()
 
   if (m_multisamples != g_settings.gpu_multisamples)
   {
-    Host::AddIconOSDMessage("MSAAUnsupported", ICON_FA_EXCLAMATION_TRIANGLE,
+    Host::AddIconOSDMessage("MSAAUnsupported", ICON_EMOJI_WARNING,
                             fmt::format(TRANSLATE_FS("GPU_HW", "{}x MSAA is not supported, using {}x instead."),
                                         g_settings.gpu_multisamples, m_multisamples),
                             Host::OSD_CRITICAL_ERROR_DURATION);
@@ -539,7 +543,7 @@ void GPU_HW::CheckSettings()
 
   if (g_settings.gpu_per_sample_shading && !features.per_sample_shading)
   {
-    Host::AddIconOSDMessage("SSAAUnsupported", ICON_FA_EXCLAMATION_TRIANGLE,
+    Host::AddIconOSDMessage("SSAAUnsupported", ICON_EMOJI_WARNING,
                             TRANSLATE_STR("GPU_HW", "SSAA is not supported, using MSAA instead."),
                             Host::OSD_ERROR_DURATION);
   }
@@ -547,7 +551,7 @@ void GPU_HW::CheckSettings()
       (IsBlendedTextureFiltering(m_texture_filtering) || IsBlendedTextureFiltering(m_sprite_texture_filtering)))
   {
     Host::AddIconOSDMessage(
-      "TextureFilterUnsupported", ICON_FA_EXCLAMATION_TRIANGLE,
+      "TextureFilterUnsupported", ICON_EMOJI_WARNING,
       fmt::format(TRANSLATE_FS("GPU_HW", "Texture filter '{}/{}' is not supported with the current renderer."),
                   Settings::GetTextureFilterDisplayName(m_texture_filtering),
                   Settings::GetTextureFilterName(m_sprite_texture_filtering), Host::OSD_ERROR_DURATION));
@@ -561,7 +565,7 @@ void GPU_HW::CheckSettings()
   {
     // m_allow_shader_blend/m_prefer_shader_blend will be cleared in pipeline compile.
     Host::AddIconOSDMessage(
-      "AccurateBlendingUnsupported", ICON_FA_PAINT_BRUSH,
+      "AccurateBlendingUnsupported", ICON_EMOJI_WARNING,
       TRANSLATE_STR("GPU_HW", "Accurate blending is not supported by your current GPU.\nIt requires framebuffer fetch, "
                               "feedback loops, or rasterizer order views."),
       Host::OSD_WARNING_DURATION);
@@ -571,7 +575,7 @@ void GPU_HW::CheckSettings()
             (m_pgxp_depth_buffer && features.raster_order_views && !features.feedback_loops)))
   {
     Host::AddIconOSDMessage(
-      "AccurateBlendingUnsupported", ICON_FA_PAINT_BRUSH,
+      "AccurateBlendingUnsupported", ICON_EMOJI_WARNING,
       TRANSLATE_STR("GPU_HW", "Multisample anti-aliasing is not supported when using ROV blending."),
       Host::OSD_WARNING_DURATION);
     m_multisamples = 1;
@@ -580,7 +584,7 @@ void GPU_HW::CheckSettings()
   if (m_pgxp_depth_buffer && !features.feedback_loops && !features.framebuffer_fetch && !features.raster_order_views)
   {
     Host::AddIconOSDMessage(
-      "AccurateBlendingUnsupported", ICON_FA_PAINT_BRUSH,
+      "AccurateBlendingUnsupported", ICON_EMOJI_WARNING,
       TRANSLATE_STR("GPU_HW", "PGXP depth buffer is not supported by your current GPU or renderer.\nIt requires "
                               "framebuffer fetch, feedback loops, or rasterizer order views."),
       Host::OSD_WARNING_DURATION);
@@ -593,7 +597,7 @@ void GPU_HW::CheckSettings()
   if (!features.geometry_shaders && m_wireframe_mode != GPUWireframeMode::Disabled)
   {
     Host::AddIconOSDMessage(
-      "GeometryShadersUnsupported", ICON_FA_EXCLAMATION_TRIANGLE,
+      "GeometryShadersUnsupported", ICON_EMOJI_WARNING,
       TRANSLATE("GPU_HW", "Geometry shaders are not supported by your GPU, and are required for wireframe rendering."),
       Host::OSD_CRITICAL_ERROR_DURATION);
     m_wireframe_mode = GPUWireframeMode::Disabled;
@@ -947,10 +951,10 @@ bool GPU_HW::CompilePipelines(Error* error)
   // Abuse the depth buffer for the mask bit when it's free (FBFetch), or PGXP depth buffering is enabled.
   m_allow_shader_blend = features.framebuffer_fetch ||
                          ((features.feedback_loops || features.raster_order_views) &&
-                          (m_pgxp_depth_buffer || g_settings.gpu_accurate_blending ||
+                          (m_pgxp_depth_buffer || g_settings.IsUsingAccurateBlending() ||
                            (!m_supports_dual_source_blend && (IsBlendedTextureFiltering(m_texture_filtering) ||
                                                               IsBlendedTextureFiltering(m_sprite_texture_filtering)))));
-  m_prefer_shader_blend = (m_allow_shader_blend && g_settings.gpu_accurate_blending && !g_settings.gpu_true_color);
+  m_prefer_shader_blend = (m_allow_shader_blend && g_settings.IsUsingAccurateBlending());
   m_use_rov_for_shader_blend = (m_allow_shader_blend && !features.framebuffer_fetch && features.raster_order_views &&
                                 (m_prefer_shader_blend || !features.feedback_loops));
   m_write_mask_as_depth = (!m_pgxp_depth_buffer && !features.framebuffer_fetch && !m_prefer_shader_blend);
@@ -3958,7 +3962,7 @@ void GPU_HW::DrawRendererStats()
     static const ImVec4 inactive_color{0.4f, 0.4f, 0.4f, 1.0f};
 
     ImGui::Columns(2);
-    ImGui::SetColumnWidth(0, 200.0f * Host::GetOSDScale());
+    ImGui::SetColumnWidth(0, 200.0f * ImGuiManager::GetGlobalScale());
 
     ImGui::TextUnformatted("Resolution Scale:");
     ImGui::NextColumn();

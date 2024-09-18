@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -8,11 +8,8 @@
 #include "common/small_string.h"
 #include "common/types.h"
 
-#include <ctime>
 #include <functional>
-#include <memory>
 #include <mutex>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -24,7 +21,7 @@ struct WindowInfo;
 enum class AudioBackend : u8;
 enum class AudioExpansionMode : u8;
 enum class AudioStretchMode : u8;
-enum class RenderAPI : u32;
+enum class RenderAPI : u8;
 class AudioStream;
 class CDImage;
 

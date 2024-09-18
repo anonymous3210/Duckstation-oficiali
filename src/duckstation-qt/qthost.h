@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -148,6 +148,8 @@ Q_SIGNALS:
   void achievementsRefreshed(quint32 id, const QString& game_info_string);
   void achievementsChallengeModeChanged(bool enabled);
   void cheatEnabled(quint32 index, bool enabled);
+  void mediaCaptureStarted();
+  void mediaCaptureStopped();
 
   /// Big Picture UI requests.
   void onCoverDownloaderOpenRequested();
@@ -157,6 +159,7 @@ public Q_SLOTS:
   void applySettings(bool display_osd_messages = false);
   void reloadGameSettings(bool display_osd_messages = false);
   void updateEmuFolders();
+  void updateControllerSettings();
   void reloadInputSources();
   void reloadInputBindings();
   void reloadInputDevices();
@@ -248,6 +251,21 @@ private:
 extern EmuThread* g_emu_thread;
 
 namespace QtHost {
+/// Default theme name for the platform.
+const char* GetDefaultThemeName();
+
+/// Default language for the platform.
+const char* GetDefaultLanguage();
+
+/// Sets application theme according to settings.
+void UpdateApplicationTheme();
+
+/// Returns true if the application theme is using dark colours.
+bool IsDarkApplicationTheme();
+
+/// Sets the icon theme, based on the current style (light/dark).
+void SetIconThemeFromStyle();
+
 /// Sets batch mode (exit after game shutdown).
 bool InBatchMode();
 
@@ -261,7 +279,7 @@ void RunOnUIThread(const std::function<void()>& func, bool block = false);
 const char* GetDefaultLanguage();
 
 /// Call when the language changes.
-void InstallTranslator(QWidget* dialog_parent);
+void UpdateApplicationLanguage(QWidget* dialog_parent);
 
 /// Returns the application name and version, optionally including debug/devel config indicator.
 QString GetAppNameAndVersion();

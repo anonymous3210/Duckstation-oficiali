@@ -1,11 +1,11 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
 #include "types.h"
 
-#include "fmt/core.h"
+#include "fmt/base.h"
 
 #include <cinttypes>
 #include <cstdarg>
@@ -41,6 +41,7 @@ void UnregisterCallback(CallbackFunctionType callbackFunction, void* pUserParam)
 float GetCurrentMessageTime();
 
 // adds a standard console output
+bool IsConsoleOutputCurrentlyAvailable();
 bool IsConsoleOutputEnabled();
 void SetConsoleOutputParams(bool enabled, bool timestamps = true);
 

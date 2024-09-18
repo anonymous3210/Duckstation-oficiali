@@ -1,10 +1,11 @@
-// SPDX-FileCopyrightText: 2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "metal_device.h"
 
 #include "common/align.h"
 #include "common/assert.h"
+#include "common/cocoa_tools.h"
 #include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
@@ -17,11 +18,24 @@
 #include "fmt/format.h"
 
 #include <array>
+#include <mach/mach_time.h>
 #include <pthread.h>
 
 Log_SetChannel(MetalDevice);
 
 // TODO: Disable hazard tracking and issue barriers explicitly.
+
+// Used for shader "binaries".
+namespace {
+struct MetalShaderBinaryHeader
+{
+  u32 entry_point_offset;
+  u32 entry_point_length;
+  u32 source_offset;
+  u32 source_length;
+};
+static_assert(sizeof(MetalShaderBinaryHeader) == 16);
+} // namespace
 
 // Looking across a range of GPUs, the optimal copy alignment for Vulkan drivers seems
 // to be between 1 (AMD/NV) and 64 (Intel). So, we'll go with 64 here.
@@ -32,53 +46,38 @@ static constexpr u32 TEXTURE_UPLOAD_ALIGNMENT = 64;
 static constexpr u32 TEXTURE_UPLOAD_PITCH_ALIGNMENT = 64;
 
 static constexpr std::array<MTLPixelFormat, static_cast<u32>(GPUTexture::Format::MaxCount)> s_pixel_format_mapping = {
-  MTLPixelFormatInvalid,      // Unknown
-  MTLPixelFormatRGBA8Unorm,   // RGBA8
-  MTLPixelFormatBGRA8Unorm,   // BGRA8
-  MTLPixelFormatB5G6R5Unorm,  // RGB565
-  MTLPixelFormatA1BGR5Unorm,  // RGBA5551
-  MTLPixelFormatR8Unorm,      // R8
-  MTLPixelFormatDepth16Unorm, // D16
+  MTLPixelFormatInvalid,               // Unknown
+  MTLPixelFormatRGBA8Unorm,            // RGBA8
+  MTLPixelFormatBGRA8Unorm,            // BGRA8
+  MTLPixelFormatB5G6R5Unorm,           // RGB565
+  MTLPixelFormatA1BGR5Unorm,           // RGBA5551
+  MTLPixelFormatR8Unorm,               // R8
+  MTLPixelFormatDepth16Unorm,          // D16
   MTLPixelFormatDepth24Unorm_Stencil8, // D24S8
-  MTLPixelFormatDepth32Float, // D32F
+  MTLPixelFormatDepth32Float,          // D32F
   MTLPixelFormatDepth32Float_Stencil8, // D32FS8
-  MTLPixelFormatR16Unorm,     // R16
-  MTLPixelFormatR16Sint,      // R16I
-  MTLPixelFormatR16Uint,      // R16U
-  MTLPixelFormatR16Float,     // R16F
-  MTLPixelFormatR32Sint,      // R32I
-  MTLPixelFormatR32Uint,      // R32U
-  MTLPixelFormatR32Float,     // R32F
-  MTLPixelFormatRG8Unorm,     // RG8
-  MTLPixelFormatRG16Unorm,    // RG16
-  MTLPixelFormatRG16Float,    // RG16F
-  MTLPixelFormatRG32Float,    // RG32F
-  MTLPixelFormatRGBA16Unorm,  // RGBA16
-  MTLPixelFormatRGBA16Float,  // RGBA16F
-  MTLPixelFormatRGBA32Float,  // RGBA32F
-  MTLPixelFormatBGR10A2Unorm, // RGB10A2
+  MTLPixelFormatR16Unorm,              // R16
+  MTLPixelFormatR16Sint,               // R16I
+  MTLPixelFormatR16Uint,               // R16U
+  MTLPixelFormatR16Float,              // R16F
+  MTLPixelFormatR32Sint,               // R32I
+  MTLPixelFormatR32Uint,               // R32U
+  MTLPixelFormatR32Float,              // R32F
+  MTLPixelFormatRG8Unorm,              // RG8
+  MTLPixelFormatRG16Unorm,             // RG16
+  MTLPixelFormatRG16Float,             // RG16F
+  MTLPixelFormatRG32Float,             // RG32F
+  MTLPixelFormatRGBA16Unorm,           // RGBA16
+  MTLPixelFormatRGBA16Float,           // RGBA16F
+  MTLPixelFormatRGBA32Float,           // RGBA32F
+  MTLPixelFormatBGR10A2Unorm,          // RGB10A2
 };
-
-static NSString* StringViewToNSString(std::string_view str)
-{
-  if (str.empty())
-    return nil;
-
-  return [[[NSString alloc] autorelease] initWithBytes:str.data()
-                                                length:static_cast<NSUInteger>(str.length())
-                                              encoding:NSUTF8StringEncoding];
-}
 
 static void LogNSError(NSError* error, std::string_view message)
 {
   Log::FastWrite("MetalDevice", LOGLEVEL_ERROR, message);
   Log::FastWrite("MetalDevice", LOGLEVEL_ERROR, "  NSError Code: {}", static_cast<u32>(error.code));
   Log::FastWrite("MetalDevice", LOGLEVEL_ERROR, "  NSError Description: {}", [error.description UTF8String]);
-}
-
-static void NSErrorToErrorObject(Error* errptr, std::string_view message, NSError* error)
-{
-  Error::SetStringFmt(errptr, "{}NSError Code {}: {}", message, static_cast<u32>(error.code), [error.description UTF8String]);
 }
 
 static GPUTexture::Format GetTextureFormatForMTLFormat(MTLPixelFormat fmt)
@@ -133,13 +132,7 @@ MetalDevice::MetalDevice() : m_current_viewport(0, 0, 1, 1), m_current_scissor(0
 
 MetalDevice::~MetalDevice()
 {
-  Assert(m_layer == nil);
-  Assert(m_device == nil);
-}
-
-RenderAPI MetalDevice::GetRenderAPI() const
-{
-  return RenderAPI::Metal;
+  Assert(m_pipeline_archive == nil && m_layer == nil && m_device == nil);
 }
 
 bool MetalDevice::HasSurface() const
@@ -161,9 +154,8 @@ void MetalDevice::SetVSyncMode(GPUVSyncMode mode, bool allow_present_throttle)
     [m_layer setDisplaySyncEnabled:m_vsync_mode == GPUVSyncMode::FIFO];
 }
 
-bool MetalDevice::CreateDevice(std::string_view adapter, bool threaded_presentation,
-                               std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features,
-                               Error* error)
+bool MetalDevice::CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
+                               FeatureMask disabled_features, Error* error)
 {
   @autoreleasepool
   {
@@ -235,6 +227,9 @@ bool MetalDevice::CreateDevice(std::string_view adapter, bool threaded_presentat
 
 void MetalDevice::SetFeatures(FeatureMask disabled_features)
 {
+  // Set version to Metal 2.3, that's all we're using. Use SPIRV-Cross version encoding.
+  m_render_api = RenderAPI::Metal;
+  m_render_api_version = 20300;
   m_max_texture_size = GetMetalMaxTextureSize(m_device);
   m_max_multisamples = GetMetalMaxMultisamples(m_device);
 
@@ -257,9 +252,17 @@ void MetalDevice::SetFeatures(FeatureMask disabled_features)
   m_features.partial_msaa_resolve = false;
   m_features.memory_import = true;
   m_features.explicit_present = false;
+  m_features.timed_present = true;
   m_features.shader_cache = true;
-  m_features.pipeline_cache = false;
+  m_features.pipeline_cache = true;
   m_features.prefer_unused_textures = true;
+
+  // Disable pipeline cache on Intel, apparently it's buggy.
+  if ([[m_device name] containsString:@"Intel"])
+  {
+    WARNING_LOG("Disabling Metal pipeline cache on Intel GPU.");
+    m_features.pipeline_cache = false;
+  }
 }
 
 bool MetalDevice::LoadShaders()
@@ -287,6 +290,76 @@ bool MetalDevice::LoadShaders()
     if (!(m_shaders = try_lib(@"Metal23")) && !(m_shaders = try_lib(@"Metal22")) &&
         !(m_shaders = try_lib(@"Metal21")) && !(m_shaders = try_lib(@"default")))
     {
+      return false;
+    }
+
+    return true;
+  }
+}
+
+bool MetalDevice::OpenPipelineCache(const std::string& path, Error* error)
+{
+  @autoreleasepool
+  {
+    MTLBinaryArchiveDescriptor* archiveDescriptor = [[[MTLBinaryArchiveDescriptor alloc] init] autorelease];
+    archiveDescriptor.url = [NSURL fileURLWithPath:CocoaTools::StringViewToNSString(path)];
+
+    NSError* nserror = nil;
+    m_pipeline_archive = [m_device newBinaryArchiveWithDescriptor:archiveDescriptor error:&nserror];
+    if (m_pipeline_archive == nil)
+    {
+      CocoaTools::NSErrorToErrorObject(error, "newBinaryArchiveWithDescriptor failed: ", nserror);
+      return false;
+    }
+
+    m_pipeline_cache_modified = false;
+    return true;
+  }
+}
+
+bool MetalDevice::CreatePipelineCache(const std::string& path, Error* error)
+{
+  @autoreleasepool
+  {
+    MTLBinaryArchiveDescriptor* archiveDescriptor = [[[MTLBinaryArchiveDescriptor alloc] init] autorelease];
+    archiveDescriptor.url = nil;
+
+    NSError* nserror = nil;
+    m_pipeline_archive = [m_device newBinaryArchiveWithDescriptor:archiveDescriptor error:&nserror];
+    if (m_pipeline_archive == nil)
+    {
+      CocoaTools::NSErrorToErrorObject(error, "newBinaryArchiveWithDescriptor failed: ", nserror);
+      return false;
+    }
+
+    m_pipeline_cache_modified = false;
+    return true;
+  }
+}
+
+bool MetalDevice::ClosePipelineCache(const std::string& path, Error* error)
+{
+  if (!m_pipeline_archive)
+    return false;
+
+  const ScopedGuard closer = [this]() {
+    [m_pipeline_archive release];
+    m_pipeline_archive = nil;
+  };
+
+  if (!m_pipeline_cache_modified)
+  {
+    INFO_LOG("Not saving pipeline cache, it has not been modified.");
+    return true;
+  }
+
+  @autoreleasepool
+  {
+    NSURL* url = [NSURL fileURLWithPath:CocoaTools::StringViewToNSString(path)];
+    NSError* nserror = nil;
+    if (![m_pipeline_archive serializeToURL:url error:&nserror])
+    {
+      CocoaTools::NSErrorToErrorObject(error, "serializeToURL failed: ", nserror);
       return false;
     }
 
@@ -586,25 +659,8 @@ void MetalShader::SetDebugName(std::string_view name)
 {
   @autoreleasepool
   {
-    [m_function setLabel:StringViewToNSString(name)];
+    [m_function setLabel:CocoaTools::StringViewToNSString(name)];
   }
-}
-
-// TODO: Clean this up, somehow..
-namespace EmuFolders {
-extern std::string DataRoot;
-}
-static void DumpShader(u32 n, std::string_view suffix, std::string_view data)
-{
-  if (data.empty())
-    return;
-
-  auto fp = FileSystem::OpenManagedCFile(
-    Path::Combine(EmuFolders::DataRoot, fmt::format("shader{}_{}.txt", suffix, n)).c_str(), "wb");
-  if (!fp)
-    return;
-
-  std::fwrite(data.data(), data.length(), 1, fp.get());
 }
 
 std::unique_ptr<GPUShader> MetalDevice::CreateShaderFromMSL(GPUShaderStage stage, std::string_view source,
@@ -612,8 +668,8 @@ std::unique_ptr<GPUShader> MetalDevice::CreateShaderFromMSL(GPUShaderStage stage
 {
   @autoreleasepool
   {
-    NSString* const ns_source = StringViewToNSString(source);
-    NSError* nserror = nullptr;
+    NSString* const ns_source = CocoaTools::StringViewToNSString(source);
+    NSError* nserror = nil;
     id<MTLLibrary> library = [m_device newLibraryWithSource:ns_source options:nil error:&nserror];
     if (!library)
     {
@@ -626,7 +682,7 @@ std::unique_ptr<GPUShader> MetalDevice::CreateShaderFromMSL(GPUShaderStage stage
       return {};
     }
 
-    id<MTLFunction> function = [library newFunctionWithName:StringViewToNSString(entry_point)];
+    id<MTLFunction> function = [library newFunctionWithName:CocoaTools::StringViewToNSString(entry_point)];
     if (!function)
     {
       ERROR_LOG("Failed to get main function in compiled library");
@@ -641,39 +697,55 @@ std::unique_ptr<GPUShader> MetalDevice::CreateShaderFromMSL(GPUShaderStage stage
 std::unique_ptr<GPUShader> MetalDevice::CreateShaderFromBinary(GPUShaderStage stage, std::span<const u8> data,
                                                                Error* error)
 {
-  const std::string_view str_data(reinterpret_cast<const char*>(data.data()), data.size());
-  return CreateShaderFromMSL(stage, str_data, "main0", error);
+  if (data.size() < sizeof(MetalShaderBinaryHeader))
+  {
+    Error::SetStringView(error, "Invalid header.");
+    return {};
+  }
+
+  // Need to copy for alignment reasons.
+  MetalShaderBinaryHeader hdr;
+  std::memcpy(&hdr, data.data(), sizeof(hdr));
+  if (static_cast<size_t>(hdr.entry_point_offset) + static_cast<size_t>(hdr.entry_point_length) > data.size() ||
+      static_cast<size_t>(hdr.source_offset) + static_cast<size_t>(hdr.source_length) > data.size())
+  {
+    Error::SetStringView(error, "Out of range fields in header.");
+    return {};
+  }
+
+  const std::string_view entry_point(reinterpret_cast<const char*>(data.data() + hdr.entry_point_offset),
+                                     hdr.entry_point_length);
+  const std::string source(reinterpret_cast<const char*>(data.data() + hdr.source_offset), hdr.source_length);
+  return CreateShaderFromMSL(stage, source, entry_point, error);
 }
 
 std::unique_ptr<GPUShader> MetalDevice::CreateShaderFromSource(GPUShaderStage stage, GPUShaderLanguage language,
                                                                std::string_view source, const char* entry_point,
                                                                DynamicHeapArray<u8>* out_binary, Error* error)
 {
-  static constexpr bool dump_shaders = false;
-
-  DynamicHeapArray<u8> spv;
-  if (!CompileGLSLShaderToVulkanSpv(stage, language, source, entry_point, !m_debug_device, false, &spv, error))
-    return {};
-
-  std::string msl;
-  if (!TranslateVulkanSpvToLanguage(spv.cspan(), stage, GPUShaderLanguage::MSL, 230, &msl, error))
-    return {};
-
-  if constexpr (dump_shaders)
+  if (language != GPUShaderLanguage::MSL)
   {
-    static unsigned s_next_id = 0;
-    ++s_next_id;
-    DumpShader(s_next_id, "_input", source);
-    DumpShader(s_next_id, "_msl", msl);
+    return TranspileAndCreateShaderFromSource(stage, language, source, entry_point, GPUShaderLanguage::MSL,
+                                              m_render_api_version, out_binary, error);
   }
 
+  // Source is the "binary" here, since Metal doesn't allow us to access the bytecode :(
+  const std::span<const u8> msl(reinterpret_cast<const u8*>(source.data()), source.size());
   if (out_binary)
   {
-    out_binary->resize(msl.size());
-    std::memcpy(out_binary->data(), msl.data(), msl.size());
+    MetalShaderBinaryHeader hdr;
+    hdr.entry_point_offset = sizeof(MetalShaderBinaryHeader);
+    hdr.entry_point_length = static_cast<u32>(std::strlen(entry_point));
+    hdr.source_offset = hdr.entry_point_offset + hdr.entry_point_length;
+    hdr.source_length = static_cast<u32>(source.size());
+
+    out_binary->resize(sizeof(hdr) + hdr.entry_point_length + hdr.source_length);
+    std::memcpy(out_binary->data(), &hdr, sizeof(hdr));
+    std::memcpy(&out_binary->data()[hdr.entry_point_offset], entry_point, hdr.entry_point_length);
+    std::memcpy(&out_binary->data()[hdr.source_offset], source.data(), hdr.source_length);
   }
 
-  return CreateShaderFromMSL(stage, msl, "main0", error);
+  return CreateShaderFromMSL(stage, source, entry_point, error);
 }
 
 MetalPipeline::MetalPipeline(id<MTLRenderPipelineState> pipeline, id<MTLDepthStencilState> depth, MTLCullMode cull_mode,
@@ -862,13 +934,41 @@ std::unique_ptr<GPUPipeline> MetalDevice::CreatePipeline(const GPUPipeline::Grap
     if (config.layout == GPUPipeline::Layout::SingleTextureBufferAndPushConstants)
       desc.fragmentBuffers[1].mutability = MTLMutabilityImmutable;
 
-    NSError* nserror = nullptr;
-    id<MTLRenderPipelineState> pipeline = [m_device newRenderPipelineStateWithDescriptor:desc error:&nserror];
+    NSError* nserror = nil;
+
+    // Try cached first.
+    id<MTLRenderPipelineState> pipeline = nil;
+    if (m_pipeline_archive != nil)
+    {
+      desc.binaryArchives = [NSArray arrayWithObjects:m_pipeline_archive, nil];
+      pipeline = [m_device newRenderPipelineStateWithDescriptor:desc
+                                                        options:MTLPipelineOptionFailOnBinaryArchiveMiss
+                                                     reflection:nil
+                                                          error:&nserror];
+      if (pipeline == nil)
+      {
+        // Add it to the cache.
+        if (![m_pipeline_archive addRenderPipelineFunctionsWithDescriptor:desc error:&nserror])
+        {
+          LogNSError(nserror, "Failed to add render pipeline to binary archive");
+          desc.binaryArchives = nil;
+        }
+        else
+        {
+          m_pipeline_cache_modified = true;
+        }
+      }
+    }
+
     if (pipeline == nil)
     {
-      LogNSError(nserror, "Failed to create render pipeline state");
-      NSErrorToErrorObject(error, "newRenderPipelineStateWithDescriptor failed: ", nserror);
-      return {};
+      pipeline = [m_device newRenderPipelineStateWithDescriptor:desc error:&nserror];
+      if (pipeline == nil)
+      {
+        LogNSError(nserror, "Failed to create render pipeline state");
+        CocoaTools::NSErrorToErrorObject(error, "newRenderPipelineStateWithDescriptor failed: ", nserror);
+        return {};
+      }
     }
 
     return std::unique_ptr<GPUPipeline>(new MetalPipeline(pipeline, depth, cull_mode, primitive));
@@ -1041,7 +1141,7 @@ void MetalTexture::SetDebugName(std::string_view name)
 {
   @autoreleasepool
   {
-    [m_texture setLabel:StringViewToNSString(name)];
+    [m_texture setLabel:CocoaTools::StringViewToNSString(name)];
   }
 }
 
@@ -1260,7 +1360,7 @@ void MetalDownloadTexture::SetDebugName(std::string_view name)
 {
   @autoreleasepool
   {
-    [m_buffer setLabel:StringViewToNSString(name)];
+    [m_buffer setLabel:CocoaTools::StringViewToNSString(name)];
   }
 }
 
@@ -1683,7 +1783,7 @@ void MetalTextureBuffer::SetDebugName(std::string_view name)
 {
   @autoreleasepool
   {
-    [m_buffer.GetBuffer() setLabel:StringViewToNSString(name)];
+    [m_buffer.GetBuffer() setLabel:CocoaTools::StringViewToNSString(name)];
   }
 }
 
@@ -2313,17 +2413,14 @@ id<MTLBlitCommandEncoder> MetalDevice::GetBlitEncoder(bool is_inline)
   }
 }
 
-bool MetalDevice::BeginPresent(bool skip_present)
+GPUDevice::PresentResult MetalDevice::BeginPresent(u32 clear_color)
 {
   @autoreleasepool
   {
-    if (skip_present)
-      return false;
-
     if (m_layer == nil)
     {
       TrimTexturePool();
-      return false;
+      return PresentResult::SkipPresent;
     }
 
     EndAnyEncoding();
@@ -2332,15 +2429,18 @@ bool MetalDevice::BeginPresent(bool skip_present)
     if (m_layer_drawable == nil)
     {
       TrimTexturePool();
-      return false;
+      return PresentResult::SkipPresent;
     }
 
     SetViewportAndScissor(0, 0, m_window_info.surface_width, m_window_info.surface_height);
 
     // Set up rendering to layer.
+    const GSVector4 clear_color_v = GSVector4::rgba32(clear_color);
     id<MTLTexture> layer_texture = [m_layer_drawable texture];
     m_layer_pass_desc.colorAttachments[0].texture = layer_texture;
     m_layer_pass_desc.colorAttachments[0].loadAction = MTLLoadActionClear;
+    m_layer_pass_desc.colorAttachments[0].clearColor =
+      MTLClearColorMake(clear_color_v.r, clear_color_v.g, clear_color_v.g, clear_color_v.a);
     m_render_encoder = [[m_render_cmdbuf renderCommandEncoderWithDescriptor:m_layer_pass_desc] retain];
     s_stats.num_render_passes++;
     std::memset(m_current_render_targets.data(), 0, sizeof(m_current_render_targets));
@@ -2350,21 +2450,32 @@ bool MetalDevice::BeginPresent(bool skip_present)
     m_current_pipeline = nullptr;
     m_current_depth_state = nil;
     SetInitialEncoderState();
-    return true;
+    return PresentResult::OK;
   }
 }
 
-void MetalDevice::EndPresent(bool explicit_present)
+void MetalDevice::EndPresent(bool explicit_present, u64 present_time)
 {
   DebugAssert(!explicit_present);
-
-  // TODO: Explicit present
   DebugAssert(m_num_current_render_targets == 0 && !m_current_depth_target);
   EndAnyEncoding();
 
-  [m_render_cmdbuf presentDrawable:m_layer_drawable];
+  Common::Timer::Value current_time;
+  if (present_time != 0 && (current_time = Common::Timer::GetCurrentValue()) < present_time)
+  {
+    // Need to convert to mach absolute time. Time values should already be in nanoseconds.
+    const u64 mach_time_nanoseconds = CocoaTools::ConvertMachTimeBaseToNanoseconds(mach_absolute_time());
+    const double mach_present_time = static_cast<double>(mach_time_nanoseconds + (present_time - current_time)) / 1e+9;
+    [m_render_cmdbuf presentDrawable:m_layer_drawable atTime:mach_present_time];
+  }
+  else
+  {
+    [m_render_cmdbuf presentDrawable:m_layer_drawable];
+  }
+
   DeferRelease(m_layer_drawable);
   m_layer_drawable = nil;
+
   SubmitCommandBuffer();
   TrimTexturePool();
 }

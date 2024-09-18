@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -20,10 +20,8 @@ public:
   static GPUShaderLanguage GetShaderLanguageForAPI(RenderAPI api);
   static bool UseGLSLBindingLayout();
 
-#ifdef ENABLE_OPENGL
   static u32 GetGLSLVersion(RenderAPI render_api);
   static TinyString GetGLSLVersionString(RenderAPI render_api, u32 version);
-#endif
 
   ALWAYS_INLINE GPUShaderLanguage GetLanguage() const { return m_shader_language; }
 

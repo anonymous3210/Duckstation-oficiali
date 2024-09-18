@@ -1,9 +1,10 @@
-// SPDX-FileCopyrightText: 2023-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "gpu_shader_cache.h"
 #include "gpu_device.h"
 
+#include "common/error.h"
 #include "common/file_system.h"
 #include "common/heap_array.h"
 #include "common/log.h"
@@ -12,12 +13,17 @@
 
 #include "fmt/format.h"
 
-#include "zstd.h"
-#include "zstd_errors.h"
+#include "compress_helpers.h"
 
 Log_SetChannel(GPUShaderCache);
 
 #pragma pack(push, 1)
+struct CacheFileHeader
+{
+  u32 signature;
+  u32 render_api_version;
+  u32 cache_version;
+};
 struct CacheIndexEntry
 {
   u8 shader_type;
@@ -33,6 +39,8 @@ struct CacheIndexEntry
   u32 uncompressed_size;
 };
 #pragma pack(pop)
+
+static constexpr u32 EXPECTED_SIGNATURE = 0x434B5544; // DUKC
 
 GPUShaderCache::GPUShaderCache() = default;
 
@@ -59,10 +67,11 @@ std::size_t GPUShaderCache::CacheIndexEntryHash::operator()(const CacheIndexKey&
   return h;
 }
 
-bool GPUShaderCache::Open(std::string_view base_filename, u32 version)
+bool GPUShaderCache::Open(std::string_view base_filename, u32 render_api_version, u32 cache_version)
 {
   m_base_filename = base_filename;
-  m_version = version;
+  m_render_api_version = render_api_version;
+  m_version = cache_version;
 
   if (base_filename.empty())
     return true;
@@ -127,7 +136,9 @@ bool GPUShaderCache::CreateNew(const std::string& index_filename, const std::str
     return false;
   }
 
-  if (std::fwrite(&m_version, sizeof(m_version), 1, m_index_file) != 1) [[unlikely]]
+  const CacheFileHeader file_header = {
+    .signature = EXPECTED_SIGNATURE, .render_api_version = m_render_api_version, .cache_version = m_version};
+  if (std::fwrite(&file_header, sizeof(file_header), 1, m_index_file) != 1) [[unlikely]]
   {
     ERROR_LOG("Failed to write version to index file '{}'", Path::GetFileName(index_filename));
     std::fclose(m_index_file);
@@ -165,8 +176,10 @@ bool GPUShaderCache::ReadExisting(const std::string& index_filename, const std::
     return false;
   }
 
-  u32 file_version = 0;
-  if (std::fread(&file_version, sizeof(file_version), 1, m_index_file) != 1 || file_version != m_version) [[unlikely]]
+  CacheFileHeader file_header;
+  if (std::fread(&file_header, sizeof(file_header), 1, m_index_file) != 1 ||
+      file_header.signature != EXPECTED_SIGNATURE || file_header.render_api_version != m_render_api_version ||
+      file_header.cache_version != m_version) [[unlikely]]
   {
     ERROR_LOG("Bad file/data version in '{}'", Path::GetFileName(index_filename));
     std::fclose(m_index_file);
@@ -251,42 +264,43 @@ GPUShaderCache::CacheIndexKey GPUShaderCache::GetCacheKey(GPUShaderStage stage, 
   return key;
 }
 
-bool GPUShaderCache::Lookup(const CacheIndexKey& key, ShaderBinary* binary)
+std::optional<GPUShaderCache::ShaderBinary> GPUShaderCache::Lookup(const CacheIndexKey& key)
 {
+  std::optional<ShaderBinary> ret;
+
   auto iter = m_index.find(key);
-  if (iter == m_index.end())
-    return false;
-
-  binary->resize(iter->second.uncompressed_size);
-
-  DynamicHeapArray<u8> compressed_data(iter->second.compressed_size);
-
-  if (std::fseek(m_blob_file, iter->second.file_offset, SEEK_SET) != 0 ||
-      std::fread(compressed_data.data(), iter->second.compressed_size, 1, m_blob_file) != 1) [[unlikely]]
+  if (iter != m_index.end())
   {
-    ERROR_LOG("Read {} byte {} shader from file failed", iter->second.compressed_size,
-              GPUShader::GetStageName(static_cast<GPUShaderStage>(key.shader_type)));
-    return false;
+    DynamicHeapArray<u8> compressed_data(iter->second.compressed_size);
+
+    if (std::fseek(m_blob_file, iter->second.file_offset, SEEK_SET) != 0 ||
+        std::fread(compressed_data.data(), iter->second.compressed_size, 1, m_blob_file) != 1) [[unlikely]]
+    {
+      ERROR_LOG("Read {} byte {} shader from file failed", iter->second.compressed_size,
+                GPUShader::GetStageName(static_cast<GPUShaderStage>(key.shader_type)));
+    }
+    else
+    {
+      Error error;
+      ret = CompressHelpers::DecompressBuffer(CompressHelpers::CompressType::Zstandard,
+                                              CompressHelpers::OptionalByteBuffer(std::move(compressed_data)),
+                                              iter->second.uncompressed_size, &error);
+      if (!ret.has_value()) [[unlikely]]
+        ERROR_LOG("Failed to decompress shader: {}", error.GetDescription());
+    }
   }
 
-  const size_t decompress_result =
-    ZSTD_decompress(binary->data(), binary->size(), compressed_data.data(), compressed_data.size());
-  if (ZSTD_isError(decompress_result)) [[unlikely]]
-  {
-    ERROR_LOG("Failed to decompress shader: {}", ZSTD_getErrorName(decompress_result));
-    return false;
-  }
-
-  return true;
+  return ret;
 }
 
 bool GPUShaderCache::Insert(const CacheIndexKey& key, const void* data, u32 data_size)
 {
-  DynamicHeapArray<u8> compress_buffer(ZSTD_compressBound(data_size));
-  const size_t compress_result = ZSTD_compress(compress_buffer.data(), compress_buffer.size(), data, data_size, 0);
-  if (ZSTD_isError(compress_result)) [[unlikely]]
+  Error error;
+  CompressHelpers::OptionalByteBuffer compress_buffer =
+    CompressHelpers::CompressToBuffer(CompressHelpers::CompressType::Zstandard, data, data_size, -1, &error);
+  if (!compress_buffer.has_value()) [[unlikely]]
   {
-    ERROR_LOG("Failed to compress shader: {}", ZSTD_getErrorName(compress_result));
+    ERROR_LOG("Failed to compress shader: {}", error.GetDescription());
     return false;
   }
 
@@ -295,7 +309,7 @@ bool GPUShaderCache::Insert(const CacheIndexKey& key, const void* data, u32 data
 
   CacheIndexData idata;
   idata.file_offset = static_cast<u32>(std::ftell(m_blob_file));
-  idata.compressed_size = static_cast<u32>(compress_result);
+  idata.compressed_size = static_cast<u32>(compress_buffer->size());
   idata.uncompressed_size = data_size;
 
   CacheIndexEntry entry = {};
@@ -310,8 +324,9 @@ bool GPUShaderCache::Insert(const CacheIndexKey& key, const void* data, u32 data
   entry.compressed_size = idata.compressed_size;
   entry.uncompressed_size = idata.uncompressed_size;
 
-  if (std::fwrite(compress_buffer.data(), compress_result, 1, m_blob_file) != 1 || std::fflush(m_blob_file) != 0 ||
-      std::fwrite(&entry, sizeof(entry), 1, m_index_file) != 1 || std::fflush(m_index_file) != 0) [[unlikely]]
+  if (std::fwrite(compress_buffer->data(), compress_buffer->size(), 1, m_blob_file) != 1 ||
+      std::fflush(m_blob_file) != 0 || std::fwrite(&entry, sizeof(entry), 1, m_index_file) != 1 ||
+      std::fflush(m_index_file) != 0) [[unlikely]]
   {
     ERROR_LOG("Failed to write {} byte {} shader blob to file", data_size,
               GPUShader::GetStageName(static_cast<GPUShaderStage>(key.shader_type)));
@@ -319,7 +334,7 @@ bool GPUShaderCache::Insert(const CacheIndexKey& key, const void* data, u32 data
   }
 
   DEV_LOG("Cached compressed {} shader: {} -> {} bytes",
-          GPUShader::GetStageName(static_cast<GPUShaderStage>(key.shader_type)), data_size, compress_result);
+          GPUShader::GetStageName(static_cast<GPUShaderStage>(key.shader_type)), data_size, compress_buffer->size());
   m_index.emplace(key, idata);
   return true;
 }

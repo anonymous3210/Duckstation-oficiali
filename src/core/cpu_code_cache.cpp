@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "bus.h"
 #include "cpu_code_cache_private.h"
@@ -12,6 +12,9 @@
 #include "system.h"
 #include "timing_event.h"
 
+#include "util/page_fault_handler.h"
+
+#include "common/align.h"
 #include "common/assert.h"
 #include "common/error.h"
 #include "common/intrin.h"
@@ -99,7 +102,6 @@ static void BacklinkBlocks(u32 pc, const void* dst);
 static void UnlinkBlockExits(Block* block);
 static void ResetCodeBuffer();
 
-static void ClearASMFunctions();
 static void CompileASMFunctions();
 static bool CompileBlock(Block* block);
 static PageFaultHandler::HandlerResult HandleFastmemException(void* exception_pc, void* fault_address, bool is_write);
@@ -171,7 +173,7 @@ bool CPU::CodeCache::IsUsingAnyRecompiler()
 
 bool CPU::CodeCache::IsUsingFastmem()
 {
-  return IsUsingAnyRecompiler() && g_settings.cpu_fastmem_mode != CPUFastmemMode::Disabled;
+  return g_settings.cpu_fastmem_mode != CPUFastmemMode::Disabled;
 }
 
 bool CPU::CodeCache::ProcessStartup(Error* error)
@@ -211,37 +213,12 @@ void CPU::CodeCache::ProcessShutdown()
 #endif
 }
 
-void CPU::CodeCache::Initialize()
-{
-  Assert(s_blocks.empty());
-
-  if (IsUsingAnyRecompiler())
-  {
-    ResetCodeBuffer();
-    CompileASMFunctions();
-    ResetCodeLUT();
-  }
-
-  Bus::UpdateFastmemViews(IsUsingAnyRecompiler() ? g_settings.cpu_fastmem_mode : CPUFastmemMode::Disabled);
-  CPU::UpdateMemoryPointers();
-}
-
-void CPU::CodeCache::Shutdown()
-{
-  ClearBlocks();
-  ClearASMFunctions();
-
-  Bus::UpdateFastmemViews(CPUFastmemMode::Disabled);
-  CPU::UpdateMemoryPointers();
-}
-
 void CPU::CodeCache::Reset()
 {
   ClearBlocks();
 
   if (IsUsingAnyRecompiler())
   {
-    ClearASMFunctions();
     ResetCodeBuffer();
     CompileASMFunctions();
     ResetCodeLUT();
@@ -454,15 +431,15 @@ CPU::CodeCache::Block* CPU::CodeCache::CreateBlock(u32 pc, const BlockInstructio
       s_blocks.erase(it);
 
       block->~Block();
-      std::free(block);
+      Common::AlignedFree(block);
       block = nullptr;
     }
   }
 
   if (!block)
   {
-    block =
-      static_cast<Block*>(std::malloc(sizeof(Block) + (sizeof(Instruction) * size) + (sizeof(InstructionInfo) * size)));
+    block = static_cast<Block*>(Common::AlignedMalloc(
+      sizeof(Block) + (sizeof(Instruction) * size) + (sizeof(InstructionInfo) * size), alignof(Block)));
     Assert(block);
     new (block) Block();
     s_blocks.push_back(block);
@@ -732,7 +709,7 @@ void CPU::CodeCache::ClearBlocks()
   for (Block* block : s_blocks)
   {
     block->~Block();
-    std::free(block);
+    Common::AlignedFree(block);
   }
   s_blocks.clear();
 
@@ -884,9 +861,10 @@ void CPU::CodeCache::LogCurrentState()
 
   const auto& regs = g_state.regs;
   WriteToExecutionLog(
-    "tick=%u dc=%u/%u pc=%08X at=%08X v0=%08X v1=%08X a0=%08X a1=%08X a2=%08X a3=%08X t0=%08X t1=%08X t2=%08X t3=%08X "
-    "t4=%08X t5=%08X t6=%08X t7=%08X s0=%08X s1=%08X s2=%08X s3=%08X s4=%08X s5=%08X s6=%08X s7=%08X t8=%08X t9=%08X "
-    "k0=%08X k1=%08X gp=%08X sp=%08X fp=%08X ra=%08X hi=%08X lo=%08X ldr=%s ldv=%08X cause=%08X sr=%08X gte=%08X\n",
+    "tick=%" PRIu64
+    " dc=%u/%u pc=%08X at=%08X v0=%08X v1=%08X a0=%08X a1=%08X a2=%08X a3=%08X t0=%08X t1=%08X t2=%08X t3=%08X t4=%08X "
+    "t5=%08X t6=%08X t7=%08X s0=%08X s1=%08X s2=%08X s3=%08X s4=%08X s5=%08X s6=%08X s7=%08X t8=%08X t9=%08X k0=%08X "
+    "k1=%08X gp=%08X sp=%08X fp=%08X ra=%08X hi=%08X lo=%08X ldr=%s ldv=%08X cause=%08X sr=%08X gte=%08X\n",
     System::GetGlobalTickCounter(), g_state.pending_ticks, g_state.downcount, g_state.pc, regs.at, regs.v0, regs.v1,
     regs.a0, regs.a1, regs.a2, regs.a3, regs.t0, regs.t1, regs.t2, regs.t3, regs.t4, regs.t5, regs.t6, regs.t7, regs.s0,
     regs.s1, regs.s2, regs.s3, regs.s4, regs.s5, regs.s6, regs.s7, regs.t8, regs.t9, regs.k0, regs.k1, regs.gp, regs.sp,
@@ -1556,25 +1534,14 @@ const void* CPU::CodeCache::GetInterpretUncachedBlockFunction()
   }
 }
 
-void CPU::CodeCache::ClearASMFunctions()
+void CPU::CodeCache::CompileASMFunctions()
 {
-  g_enter_recompiler = nullptr;
-  g_compile_or_revalidate_block = nullptr;
-  g_check_events_and_dispatch = nullptr;
-  g_run_events_and_dispatch = nullptr;
-  g_dispatcher = nullptr;
-  g_interpret_block = nullptr;
-  g_discard_and_recompile_block = nullptr;
+  MemMap::BeginCodeWrite();
 
 #ifdef _DEBUG
   s_total_instructions_compiled = 0;
   s_total_host_instructions_emitted = 0;
 #endif
-}
-
-void CPU::CodeCache::CompileASMFunctions()
-{
-  MemMap::BeginCodeWrite();
 
   const u32 asm_size = EmitASMFunctions(GetFreeCodePointer(), GetFreeCodeSpace());
 

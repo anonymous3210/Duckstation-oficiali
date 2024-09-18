@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -25,7 +25,7 @@
 
 class Error;
 
-enum class RenderAPI : u32
+enum class RenderAPI : u8
 {
   None,
   D3D11,
@@ -481,6 +481,13 @@ public:
     Full
   };
 
+  enum class PresentResult : u32
+  {
+    OK,
+    SkipPresent,
+    DeviceLost,
+  };
+
   struct Features
   {
     bool dual_source_blend : 1;
@@ -495,6 +502,7 @@ public:
     bool partial_msaa_resolve : 1;
     bool memory_import : 1;
     bool explicit_present : 1;
+    bool timed_present : 1;
     bool gpu_timing : 1;
     bool shader_cache : 1;
     bool pipeline_cache : 1;
@@ -532,6 +540,8 @@ public:
   static constexpr u32 MIN_TEXEL_BUFFER_ELEMENTS = 4 * 1024 * 512;
   static constexpr u32 MAX_RENDER_TARGETS = 4;
   static constexpr u32 MAX_IMAGE_RENDER_TARGETS = 2;
+  static constexpr u32 DEFAULT_CLEAR_COLOR = 0xFF000000u;
+  static constexpr u32 PIPELINE_CACHE_HASH_SIZE = 20;
   static_assert(sizeof(GPUPipeline::GraphicsConfig::color_formats) == sizeof(GPUTexture::Format) * MAX_RENDER_TARGETS);
 
   GPUDevice();
@@ -585,6 +595,8 @@ public:
   }
 
   ALWAYS_INLINE const Features& GetFeatures() const { return m_features; }
+  ALWAYS_INLINE RenderAPI GetRenderAPI() const { return m_render_api; }
+  ALWAYS_INLINE u32 GetRenderAPIVersion() const { return m_render_api_version; }
   ALWAYS_INLINE u32 GetMaxTextureSize() const { return m_max_texture_size; }
   ALWAYS_INLINE u32 GetMaxMultisamples() const { return m_max_multisamples; }
 
@@ -599,11 +611,9 @@ public:
 
   ALWAYS_INLINE bool IsGPUTimingEnabled() const { return m_gpu_timing_enabled; }
 
-  virtual RenderAPI GetRenderAPI() const = 0;
-
   bool Create(std::string_view adapter, std::string_view shader_cache_path, u32 shader_cache_version, bool debug_device,
-              GPUVSyncMode vsync, bool allow_present_throttle, bool threaded_presentation,
-              std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features, Error* error);
+              GPUVSyncMode vsync, bool allow_present_throttle, std::optional<bool> exclusive_fullscreen_control,
+              FeatureMask disabled_features, Error* error);
   void Destroy();
 
   virtual bool HasSurface() const = 0;
@@ -700,8 +710,8 @@ public:
   virtual void DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type) = 0;
 
   /// Returns false if the window was completely occluded.
-  virtual bool BeginPresent(bool skip_present) = 0;
-  virtual void EndPresent(bool explicit_submit) = 0;
+  virtual PresentResult BeginPresent(u32 clear_color = DEFAULT_CLEAR_COLOR) = 0;
+  virtual void EndPresent(bool explicit_submit, u64 submit_time = 0) = 0;
   virtual void SubmitPresent() = 0;
 
   /// Renders ImGui screen elements. Call before EndPresent().
@@ -709,6 +719,7 @@ public:
 
   ALWAYS_INLINE GPUVSyncMode GetVSyncMode() const { return m_vsync_mode; }
   ALWAYS_INLINE bool IsVSyncModeBlocking() const { return (m_vsync_mode == GPUVSyncMode::FIFO); }
+  ALWAYS_INLINE bool IsPresentThrottleAllowed() const { return m_allow_present_throttle; }
   virtual void SetVSyncMode(GPUVSyncMode mode, bool allow_present_throttle) = 0;
 
   ALWAYS_INLINE bool IsDebugDevice() const { return m_debug_device; }
@@ -734,14 +745,16 @@ public:
   static void ResetStatistics();
 
 protected:
-  virtual bool CreateDevice(std::string_view adapter, bool threaded_presentation,
-                            std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features,
-                            Error* error) = 0;
+  virtual bool CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
+                            FeatureMask disabled_features, Error* error) = 0;
   virtual void DestroyDevice() = 0;
 
   std::string GetShaderCacheBaseName(std::string_view type) const;
-  virtual bool ReadPipelineCache(const std::string& filename);
-  virtual bool GetPipelineCacheData(DynamicHeapArray<u8>* data);
+  virtual bool OpenPipelineCache(const std::string& path, Error* error);
+  virtual bool CreatePipelineCache(const std::string& path, Error* error);
+  virtual bool ReadPipelineCache(DynamicHeapArray<u8> data, Error* error);
+  virtual bool GetPipelineCacheData(DynamicHeapArray<u8>* data, Error* error);
+  virtual bool ClosePipelineCache(const std::string& path, Error* error);
 
   virtual std::unique_ptr<GPUShader> CreateShaderFromBinary(GPUShaderStage stage, std::span<const u8> data,
                                                             Error* error) = 0;
@@ -763,8 +776,11 @@ protected:
                                                                 std::string_view source, const char* entry_point,
                                                                 GPUShaderLanguage target_language, u32 target_version,
                                                                 DynamicHeapArray<u8>* out_binary, Error* error);
+  static std::optional<DynamicHeapArray<u8>> OptimizeVulkanSpv(const std::span<const u8> spirv, Error* error);
 
   Features m_features = {};
+  RenderAPI m_render_api = RenderAPI::None;
+  u32 m_render_api_version = 0;
   u32 m_max_texture_size = 0;
   u32 m_max_multisamples = 0;
 

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "autoupdaterdialog.h"
 #include "mainwindow.h"
@@ -11,12 +11,15 @@
 
 #include "util/http_downloader.h"
 
+#include "common/assert.h"
 #include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/minizip_helpers.h"
 #include "common/path.h"
 #include "common/string_util.h"
+
+#include "fmt/format.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QFile>
@@ -103,26 +106,36 @@ bool AutoUpdaterDialog::isSupported()
 #endif
 }
 
+bool AutoUpdaterDialog::isOfficialBuild()
+{
+#if !__has_include("scmversion/tag.h")
+  return false;
+#else
+  return true;
+#endif
+}
+
 bool AutoUpdaterDialog::warnAboutUnofficialBuild()
 {
   //
   // To those distributing their own builds or packages of DuckStation, and seeing this message:
   //
-  // This message is here for a reason. Under the terms of the license, you are within your rights to distribute your
-  // own builds of my application. However, it is a headache for me, as users run into broken functionality, or end up
-  // on untested/preview commits that have not been adequately tested, and I cannot resolve their issues. I provide
-  // builds for a range of platforms that covers almost all use cases, and can guarantee quality of these builds.
+  // DuckStation is licensed under the CC-BY-NC-ND-4.0 license.
   //
-  // If you must distribute builds/packages, per the GPL, modified builds should be clearly marked as such.
-  // This message is thus one way of meeting the requirement. See Section 5 of the GPLv3:
-  // https://www.gnu.org/licenses/gpl-3.0.en.html#section5
+  // This means that you do NOT have permission to re-distribute your own modified builds of DuckStation.
+  // Modifying DuckStation for personal use is fine, but you cannot distribute builds with your changes.
+  // As per the CC-BY-NC-ND conditions, you can re-distribute the official builds from https://www.duckstation.org/ and
+  // https://github.com/stenzek/duckstation, so long as they are left intact, without modification. I welcome and
+  // appreciate any pull requests made to the official repository at https://github.com/stenzek/duckstation.
   //
-  // This includes building the binary with any method that does not match the official release, including dependencies,
-  // as it is not uncommon for differing dependency versions to create issues I cannot reproduce.
+  // I made the decision to switch to a no-derivatives license because of numerous "forks" that were created purely for
+  // generating money for the person who knocked it off, and always died, leaving the community with multiple builds to
+  // choose from, most of which were out of date and broken, and endless confusion. Other forks copy/pasted upstream
+  // changes without attribution, violating copyright.
   //
-  // You should also provide user support for your package, and not direct them to upstream, as any users that ask for
-  // community help will be instructed to download a supported release instead.
+  // Thanks, and I hope you understand.
   //
+
 #if !__has_include("scmversion/tag.h") && !defined(_DEBUG)
   constexpr const char* CONFIG_SECTION = "UI";
   constexpr const char* CONFIG_KEY = "UnofficialBuildWarningConfirmed";
@@ -131,12 +144,13 @@ bool AutoUpdaterDialog::warnAboutUnofficialBuild()
 
   constexpr int DELAY_SECONDS = 5;
 
-  const QString message = QStringLiteral(
-    "<h1>You are not using an official release!</h1><h3>If you continue to use this build, expect to run into "
-    "issues.</h3><p><strong>No assistance will be provided by the developers or community</strong>, as we cannot fix "
-    "broken functionality in builds we do not control.</p><p>We <strong>strongly recommend</strong> downloading an "
-    "official release from <a href=\"https://www.duckstation.org/\">duckstation.org</a>.</p><p>Do you want to exit and "
-    "open this page now?</p>");
+  const QString message =
+    QStringLiteral("<h1>You are not using an official release!</h1><h3>DuckStation is licensed under the terms of "
+                   "CC-BY-NC-ND-4.0, which does not allow modified builds to be distributed.</h3>"
+                   "<p>If you are a developer and using a local build, you can check the box below and continue.</p>"
+                   "<p>Otherwise, you should delete this build and download an official release from "
+                   "<a href=\"https://www.duckstation.org/\">duckstation.org</a>.</p><p>Do you want to exit and "
+                   "open this page now?</p>");
 
   QMessageBox mbox;
   mbox.setIcon(QMessageBox::Warning);
@@ -746,7 +760,8 @@ bool AutoUpdaterDialog::processUpdate(const std::vector<u8>& update_data)
   }
   if (info.suffix() != QStringLiteral("app"))
   {
-    reportError(fmt::format("Unexpected application suffix {} on {}.", info.suffix().toStdString(), bundle_path.value()));
+    reportError(
+      fmt::format("Unexpected application suffix {} on {}.", info.suffix().toStdString(), bundle_path.value()));
     return false;
   }
 

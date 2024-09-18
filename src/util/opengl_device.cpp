@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "opengl_device.h"
 #include "opengl_pipeline.h"
@@ -21,7 +21,6 @@
 
 Log_SetChannel(OpenGLDevice);
 
-static constexpr const std::array<float, 4> s_clear_color = {{0.0f, 0.0f, 0.0f, 1.0f}};
 static constexpr const std::array<GLenum, GPUDevice::MAX_RENDER_TARGETS> s_draw_buffers = {
   {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3}};
 
@@ -54,11 +53,6 @@ bool OpenGLDevice::ShouldUsePBOsForDownloads()
 void OpenGLDevice::SetErrorObject(Error* errptr, std::string_view prefix, GLenum glerr)
 {
   Error::SetStringFmt(errptr, "{}GL Error 0x{:04X}", prefix, static_cast<unsigned>(glerr));
-}
-
-RenderAPI OpenGLDevice::GetRenderAPI() const
-{
-  return m_gl_context->IsGLES() ? RenderAPI::OpenGLES : RenderAPI::OpenGL;
 }
 
 std::unique_ptr<GPUTexture> OpenGLDevice::CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
@@ -282,9 +276,8 @@ bool OpenGLDevice::HasSurface() const
   return m_window_info.type != WindowInfo::Type::Surfaceless;
 }
 
-bool OpenGLDevice::CreateDevice(std::string_view adapter, bool threaded_presentation,
-                                std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features,
-                                Error* error)
+bool OpenGLDevice::CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
+                                FeatureMask disabled_features, Error* error)
 {
   m_gl_context = OpenGLContext::Create(m_window_info, error);
   if (!m_gl_context)
@@ -348,6 +341,13 @@ bool OpenGLDevice::CreateDevice(std::string_view adapter, bool threaded_presenta
 bool OpenGLDevice::CheckFeatures(FeatureMask disabled_features)
 {
   const bool is_gles = m_gl_context->IsGLES();
+
+  m_render_api = is_gles ? RenderAPI::OpenGLES : RenderAPI::OpenGL;
+
+  GLint major_version = 0, minor_version = 0;
+  glGetIntegerv(GL_MAJOR_VERSION, &major_version);
+  glGetIntegerv(GL_MINOR_VERSION, &minor_version);
+  m_render_api_version = (static_cast<u32>(major_version) * 100u) + (static_cast<u32>(minor_version) * 10u);
 
   bool vendor_id_amd = false;
   // bool vendor_id_nvidia = false;
@@ -491,6 +491,7 @@ bool OpenGLDevice::CheckFeatures(FeatureMask disabled_features)
   m_features.partial_msaa_resolve = true;
   m_features.memory_import = true;
   m_features.explicit_present = false;
+  m_features.timed_present = false;
 
   m_features.shader_cache = false;
 
@@ -528,7 +529,6 @@ void OpenGLDevice::DestroyDevice()
   if (!m_gl_context)
     return;
 
-  ClosePipelineCache();
   DestroyBuffers();
 
   m_gl_context->DoneCurrent();
@@ -616,7 +616,7 @@ void OpenGLDevice::RenderBlankFrame()
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
   glDisable(GL_SCISSOR_TEST);
   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  glClearBufferfv(GL_COLOR, 0, s_clear_color.data());
+  glClearBufferfv(GL_COLOR, 0, GSVector4::cxpr(0.0f, 0.0f, 0.0f, 1.0f).F32);
   glColorMask(m_last_blend_state.write_r, m_last_blend_state.write_g, m_last_blend_state.write_b,
               m_last_blend_state.write_a);
   glEnable(GL_SCISSOR_TEST);
@@ -742,23 +742,19 @@ void OpenGLDevice::DestroyBuffers()
   m_vertex_buffer.reset();
 }
 
-bool OpenGLDevice::BeginPresent(bool skip_present)
+GPUDevice::PresentResult OpenGLDevice::BeginPresent(u32 clear_color)
 {
-  if (skip_present || m_window_info.type == WindowInfo::Type::Surfaceless)
+  if (m_window_info.type == WindowInfo::Type::Surfaceless)
   {
-    if (!skip_present)
-    {
-      glFlush();
-      TrimTexturePool();
-    }
-
-    return false;
+    glFlush();
+    TrimTexturePool();
+    return PresentResult::SkipPresent;
   }
 
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glDisable(GL_SCISSOR_TEST);
   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  glClearBufferfv(GL_COLOR, 0, s_clear_color.data());
+  glClearBufferfv(GL_COLOR, 0, GSVector4::rgba32(clear_color).F32);
   glColorMask(m_last_blend_state.write_r, m_last_blend_state.write_g, m_last_blend_state.write_b,
               m_last_blend_state.write_a);
   glEnable(GL_SCISSOR_TEST);
@@ -773,12 +769,12 @@ bool OpenGLDevice::BeginPresent(bool skip_present)
   m_last_scissor = window_rc;
   UpdateViewport();
   UpdateScissor();
-  return true;
+  return PresentResult::OK;
 }
 
-void OpenGLDevice::EndPresent(bool explicit_present)
+void OpenGLDevice::EndPresent(bool explicit_present, u64 present_time)
 {
-  DebugAssert(!explicit_present);
+  DebugAssert(!explicit_present && present_time == 0);
   DebugAssert(m_current_fbo == 0);
 
   if (m_gpu_timing_enabled)

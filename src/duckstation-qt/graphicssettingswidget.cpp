@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "graphicssettingswidget.h"
 #include "qtutils.h"
@@ -9,6 +9,8 @@
 #include "core/game_database.h"
 #include "core/gpu.h"
 #include "core/settings.h"
+
+#include "util/media_capture.h"
 
 #include <algorithm>
 
@@ -64,7 +66,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
                                               "CustomAspectRatioDenominator", 1);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.widescreenHack, "GPU", "WidescreenHack", false);
   SettingWidgetBinder::BindWidgetToEnumSetting(
-    sif, m_ui.displayDeinterlacing, "Display", "DeinterlacingMode", &Settings::ParseDisplayDeinterlacingMode,
+    sif, m_ui.displayDeinterlacing, "GPU", "DeinterlacingMode", &Settings::ParseDisplayDeinterlacingMode,
     &Settings::GetDisplayDeinterlacingModeName, Settings::DEFAULT_DISPLAY_DEINTERLACING_MODE);
   SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.displayCropMode, "Display", "CropMode",
                                                &Settings::ParseDisplayCropMode, &Settings::GetDisplayCropModeName,
@@ -72,14 +74,15 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
   SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.displayScaling, "Display", "Scaling",
                                                &Settings::ParseDisplayScaling, &Settings::GetDisplayScalingName,
                                                Settings::DEFAULT_DISPLAY_SCALING);
+  SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.forceVideoTiming, "GPU", "ForceVideoTiming",
+                                               &Settings::ParseForceVideoTimingName, &Settings::GetForceVideoTimingName,
+                                               Settings::DEFAULT_FORCE_VIDEO_TIMING_MODE);
   SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.gpuDownsampleScale, "GPU", "DownsampleScale", 1);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.trueColor, "GPU", "TrueColor", false);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.disableInterlacing, "GPU", "DisableInterlacing", true);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.pgxpEnable, "GPU", "PGXPEnable", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.pgxpDepthBuffer, "GPU", "PGXPDepthBuffer", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.force43For24Bit, "Display", "Force4_3For24Bit", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.chromaSmoothingFor24Bit, "GPU", "ChromaSmoothing24Bit", false);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.forceNTSCTimings, "GPU", "ForceNTSCTimings", false);
 
   connect(m_ui.renderer, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           &GraphicsSettingsWidget::updateRendererDependentOptions);
@@ -100,12 +103,8 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
                                        !m_dialog->hasGameTrait(GameDatabase::Trait::DisableTextureFiltering));
   SettingWidgetBinder::SetAvailability(m_ui.trueColor, !m_dialog->hasGameTrait(GameDatabase::Trait::DisableTrueColor));
   SettingWidgetBinder::SetAvailability(m_ui.pgxpEnable, !m_dialog->hasGameTrait(GameDatabase::Trait::DisablePGXP));
-  SettingWidgetBinder::SetAvailability(m_ui.disableInterlacing,
-                                       !m_dialog->hasGameTrait(GameDatabase::Trait::ForceInterlacing));
   SettingWidgetBinder::SetAvailability(m_ui.widescreenHack,
                                        !m_dialog->hasGameTrait(GameDatabase::Trait::DisableWidescreen));
-  SettingWidgetBinder::SetAvailability(m_ui.forceNTSCTimings,
-                                       !m_dialog->hasGameTrait(GameDatabase::Trait::DisableForceNTSCTimings));
 
   // Advanced Tab
 
@@ -120,11 +119,11 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
                                                &Settings::ParseDisplayRotation, &Settings::GetDisplayRotationName,
                                                Settings::DEFAULT_DISPLAY_ROTATION);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.gpuThread, "GPU", "UseThread", true);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.threadedPresentation, "GPU", "ThreadedPresentation",
-                                               Settings::DEFAULT_THREADED_PRESENTATION);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.disableMailboxPresentation, "Display",
                                                "DisableMailboxPresentation", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.stretchDisplayVertically, "Display", "StretchVertically",
+                                               false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.automaticallyResizeWindow, "Display", "AutoResizeWindow",
                                                false);
 #ifdef _WIN32
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.blitSwapChain, "Display", "UseBlitSwapChain", false);
@@ -202,6 +201,37 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
   SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.screenshotQuality, "Display", "ScreenshotQuality",
                                               Settings::DEFAULT_DISPLAY_SCREENSHOT_QUALITY);
 
+  SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.mediaCaptureBackend, "MediaCapture", "Backend",
+                                               &MediaCapture::ParseBackendName, &MediaCapture::GetBackendName,
+                                               Settings::DEFAULT_MEDIA_CAPTURE_BACKEND);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.enableVideoCapture, "MediaCapture", "VideoCapture", true);
+  SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.videoCaptureWidth, "MediaCapture", "VideoWidth",
+                                              Settings::DEFAULT_MEDIA_CAPTURE_VIDEO_WIDTH);
+  SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.videoCaptureHeight, "MediaCapture", "VideoHeight",
+                                              Settings::DEFAULT_MEDIA_CAPTURE_VIDEO_HEIGHT);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.videoCaptureResolutionAuto, "MediaCapture", "VideoAutoSize",
+                                               false);
+  SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.videoCaptureBitrate, "MediaCapture", "VideoBitrate",
+                                              Settings::DEFAULT_MEDIA_CAPTURE_VIDEO_BITRATE);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.enableVideoCaptureArguments, "MediaCapture",
+                                               "VideoCodecUseArgs", false);
+  SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.videoCaptureArguments, "MediaCapture", "AudioCodecArgs");
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.enableAudioCapture, "MediaCapture", "AudioCapture", true);
+  SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.audioCaptureBitrate, "MediaCapture", "AudioBitrate",
+                                              Settings::DEFAULT_MEDIA_CAPTURE_AUDIO_BITRATE);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.enableVideoCaptureArguments, "MediaCapture",
+                                               "VideoCodecUseArgs", false);
+  SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.audioCaptureArguments, "MediaCapture", "AudioCodecArgs");
+
+  connect(m_ui.mediaCaptureBackend, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          &GraphicsSettingsWidget::onMediaCaptureBackendChanged);
+  connect(m_ui.enableVideoCapture, &QCheckBox::checkStateChanged, this,
+          &GraphicsSettingsWidget::onMediaCaptureVideoEnabledChanged);
+  connect(m_ui.videoCaptureResolutionAuto, &QCheckBox::checkStateChanged, this,
+          &GraphicsSettingsWidget::onMediaCaptureVideoAutoResolutionChanged);
+  connect(m_ui.enableAudioCapture, &QCheckBox::checkStateChanged, this,
+          &GraphicsSettingsWidget::onMediaCaptureAudioEnabledChanged);
+
   // Texture Replacements Tab
 
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.vramWriteReplacement, "TextureReplacements",
@@ -241,6 +271,9 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
   onAspectRatioChanged();
   onDownsampleModeChanged();
   updateResolutionDependentOptions();
+  onMediaCaptureBackendChanged();
+  onMediaCaptureAudioEnabledChanged();
+  onMediaCaptureVideoEnabledChanged();
   onEnableAnyTextureReplacementsChanged();
   onEnableVRAMWriteDumpingChanged();
   onShowDebugSettingsChanged(QtHost::ShouldShowDebugOptions());
@@ -289,8 +322,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
     m_ui.displayDeinterlacing, tr("Deinterlacing"),
     QString::fromUtf8(Settings::GetDisplayDeinterlacingModeName(Settings::DEFAULT_DISPLAY_DEINTERLACING_MODE)),
     tr("Determines which algorithm is used to convert interlaced frames to progressive for display on your system. "
-       "Generally, the \"Disable Interlacing\" enhancement provides better quality output, but some games require "
-       "interlaced rendering."));
+       "Using progressive rendering provides the best quality output, but some games require interlaced rendering."));
   dialog->registerWidgetHelp(
     m_ui.displayCropMode, tr("Crop"),
     QString::fromUtf8(Settings::GetDisplayCropModeDisplayName(Settings::DEFAULT_DISPLAY_CROP_MODE)),
@@ -300,6 +332,12 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
   dialog->registerWidgetHelp(
     m_ui.displayScaling, tr("Scaling"), tr("Bilinear (Smooth)"),
     tr("Determines how the emulated console's output is upscaled or downscaled to your monitor's resolution."));
+  dialog->registerWidgetHelp(
+    m_ui.forceVideoTiming, tr("Force Video Timing"), tr("Disabled"),
+    tr("Utilizes the chosen frame timing regardless of the active region. This feature can be used to force PAL games "
+       "to run at 60Hz and NTSC games to run at 50Hz. For most games which have a speed tied to the framerate, this "
+       "will result in the game running approximately 17% faster or slower. For variable frame rate games, it may not "
+       "affect the speed."));
   dialog->registerWidgetHelp(
     m_ui.trueColor, tr("True Color Rendering"), tr("Checked"),
     tr("Forces the precision of colours output to the console's framebuffer to use the full 8 bits of precision per "
@@ -324,17 +362,6 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
     tr("Switches back to 4:3 display aspect ratio when displaying 24-bit content, usually FMVs."));
   dialog->registerWidgetHelp(m_ui.chromaSmoothingFor24Bit, tr("FMV Chroma Smoothing"), tr("Unchecked"),
                              tr("Smooths out blockyness between colour transitions in 24-bit content, usually FMVs."));
-  dialog->registerWidgetHelp(
-    m_ui.disableInterlacing, tr("Disable Interlacing"), tr("Checked"),
-    tr(
-      "Forces the rendering and display of frames to progressive mode. <br>This removes the \"combing\" effect seen in "
-      "480i games by rendering them in 480p. Usually safe to enable.<br><b><u>May not be compatible with all "
-      "games.</u></b>"));
-  dialog->registerWidgetHelp(
-    m_ui.forceNTSCTimings, tr("Force NTSC Timings"), tr("Unchecked"),
-    tr("Uses NTSC frame timings when the console is in PAL mode, forcing PAL games to run at 60hz. <br>For most games "
-       "which have a speed tied to the framerate, this will result in the game running approximately 17% faster. "
-       "<br>For variable frame rate games, it may not affect the speed."));
 
   // Advanced Tab
 
@@ -349,9 +376,6 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
   dialog->registerWidgetHelp(m_ui.gpuThread, tr("Threaded Rendering"), tr("Checked"),
                              tr("Uses a second thread for drawing graphics. Currently only available for the software "
                                 "renderer, but can provide a significant speed improvement, and is safe to use."));
-  dialog->registerWidgetHelp(m_ui.threadedPresentation, tr("Threaded Presentation"), tr("Checked"),
-                             tr("Presents frames on a background thread when fast forwarding or vsync is disabled. "
-                                "This can measurably improve performance in the Vulkan renderer."));
   dialog->registerWidgetHelp(
     m_ui.disableMailboxPresentation, tr("Disable Mailbox Presentation"), tr("Unchecked"),
     tr("Forces the use of FIFO over Mailbox presentation, i.e. double buffering instead of triple buffering. "
@@ -359,6 +383,9 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
   dialog->registerWidgetHelp(
     m_ui.stretchDisplayVertically, tr("Stretch Vertically"), tr("Unchecked"),
     tr("Prefers stretching the display vertically instead of horizontally, when applying the display aspect ratio."));
+  dialog->registerWidgetHelp(m_ui.automaticallyResizeWindow, tr("Automatically Resize Window"), tr("Unchecked"),
+                             tr("Automatically resizes the window to match the internal resolution. <strong>For high "
+                                "internal resolutions, this will create very large windows.</strong>"));
 #ifdef _WIN32
   dialog->registerWidgetHelp(m_ui.blitSwapChain, tr("Use Blit Swap Chain"), tr("Unchecked"),
                              tr("Uses a blit presentation model instead of flipping when using the Direct3D 11 "
@@ -483,6 +510,40 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget* 
                              QStringLiteral("%1%").arg(Settings::DEFAULT_DISPLAY_SCREENSHOT_QUALITY),
                              tr("Selects the quality at which screenshots will be compressed. Higher values preserve "
                                 "more detail for JPEG, and reduce file size for PNG."));
+  dialog->registerWidgetHelp(
+    m_ui.mediaCaptureBackend, tr("Backend"),
+    QString::fromUtf8(MediaCapture::GetBackendDisplayName(Settings::DEFAULT_MEDIA_CAPTURE_BACKEND)),
+    tr("Selects the framework that is used to encode video/audio."));
+  dialog->registerWidgetHelp(m_ui.captureContainer, tr("Container"), tr("MP4"),
+                             tr("Determines the file format used to contain the captured audio/video"));
+  dialog->registerWidgetHelp(
+    m_ui.videoCaptureCodec, tr("Video Codec"), tr("Default"),
+    tr("Selects which Video Codec to be used for Video Capture. <b>If unsure, leave it on default.<b>"));
+  dialog->registerWidgetHelp(m_ui.videoCaptureBitrate, tr("Video Bitrate"), tr("6000 kbps"),
+                             tr("Sets the video bitrate to be used. Larger bitrate generally yields better video "
+                                "quality at the cost of larger resulting file size."));
+  dialog->registerWidgetHelp(
+    m_ui.videoCaptureResolutionAuto, tr("Automatic Resolution"), tr("Unchecked"),
+    tr("When checked, the video capture resolution will follows the internal resolution of the running "
+       "game. <b>Be careful when using this setting especially when you are upscaling, as higher internal "
+       "resolutions (above 4x) can cause system slowdown.</b>"));
+  dialog->registerWidgetHelp(m_ui.enableVideoCaptureArguments, tr("Enable Extra Video Arguments"), tr("Unchecked"),
+                             tr("Allows you to pass arguments to the selected video codec."));
+  dialog->registerWidgetHelp(
+    m_ui.videoCaptureArguments, tr("Extra Video Arguments"), tr("Empty"),
+    tr("Parameters passed to the selected video codec.<br><b>You must use '=' to separate key from value and ':' to "
+       "separate two pairs from each other.</b><br>For example: \"crf = 21 : preset = veryfast\""));
+  dialog->registerWidgetHelp(
+    m_ui.audioCaptureCodec, tr("Audio Codec"), tr("Default"),
+    tr("Selects which Audio Codec to be used for Video Capture. <b>If unsure, leave it on default.<b>"));
+  dialog->registerWidgetHelp(m_ui.audioCaptureBitrate, tr("Audio Bitrate"), tr("160 kbps"),
+                             tr("Sets the audio bitrate to be used."));
+  dialog->registerWidgetHelp(m_ui.enableAudioCaptureArguments, tr("Enable Extra Audio Arguments"), tr("Unchecked"),
+                             tr("Allows you to pass arguments to the selected audio codec."));
+  dialog->registerWidgetHelp(
+    m_ui.audioCaptureArguments, tr("Extra Audio Arguments"), tr("Empty"),
+    tr("Parameters passed to the selected audio codec.<br><b>You must use '=' to separate key from value and ':' to "
+       "separate two pairs from each other.</b><br>For example: \"compression_level = 4 : joint_stereo = 1\""));
 
   // Texture Replacements Tab
 
@@ -585,6 +646,12 @@ void GraphicsSettingsWidget::setupAdditionalUi()
       QString::fromUtf8(Settings::GetDisplayScalingDisplayName(static_cast<DisplayScalingMode>(i))));
   }
 
+  for (u32 i = 0; i < static_cast<u32>(ForceVideoTimingMode::Count); i++)
+  {
+    m_ui.forceVideoTiming->addItem(
+      QString::fromUtf8(Settings::GetForceVideoTimingDisplayName(static_cast<ForceVideoTimingMode>(i))));
+  }
+
   // Advanced Tab
 
   for (u32 i = 0; i < static_cast<u32>(DisplayExclusiveFullscreenControl::Count); i++)
@@ -623,6 +690,12 @@ void GraphicsSettingsWidget::setupAdditionalUi()
   {
     m_ui.screenshotFormat->addItem(
       QString::fromUtf8(Settings::GetDisplayScreenshotFormatDisplayName(static_cast<DisplayScreenshotFormat>(i))));
+  }
+
+  for (u32 i = 0; i < static_cast<u32>(MediaCaptureBackend::MaxCount); i++)
+  {
+    m_ui.mediaCaptureBackend->addItem(
+      QString::fromUtf8(MediaCapture::GetBackendDisplayName(static_cast<MediaCaptureBackend>(i))));
   }
 
   // Debugging Tab
@@ -699,7 +772,6 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
 #endif
 
   m_ui.gpuThread->setEnabled(!is_hardware);
-  m_ui.threadedPresentation->setEnabled(render_api == RenderAPI::Vulkan);
 
   m_ui.exclusiveFullscreenLabel->setEnabled(render_api == RenderAPI::D3D11 || render_api == RenderAPI::D3D12 ||
                                             render_api == RenderAPI::Vulkan);
@@ -929,6 +1001,111 @@ void GraphicsSettingsWidget::onDownsampleModeChanged()
     m_ui.gpuDownsampleScale->setVisible(false);
     m_ui.gpuDownsampleLayout->removeWidget(m_ui.gpuDownsampleScale);
   }
+}
+
+void GraphicsSettingsWidget::onMediaCaptureBackendChanged()
+{
+  SettingsInterface* const sif = m_dialog->getSettingsInterface();
+  const MediaCaptureBackend backend =
+    MediaCapture::ParseBackendName(
+      m_dialog
+        ->getEffectiveStringValue("MediaCapture", "Backend",
+                                  MediaCapture::GetBackendName(Settings::DEFAULT_MEDIA_CAPTURE_BACKEND))
+        .c_str())
+      .value_or(Settings::DEFAULT_MEDIA_CAPTURE_BACKEND);
+
+  {
+    m_ui.captureContainer->disconnect();
+    m_ui.captureContainer->clear();
+
+    for (const auto& [name, display_name] : MediaCapture::GetContainerList(backend))
+    {
+      const QString qname = QString::fromStdString(name);
+      m_ui.captureContainer->addItem(tr("%1 (%2)").arg(QString::fromStdString(display_name)).arg(qname), qname);
+    }
+
+    SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.captureContainer, "MediaCapture", "Container",
+                                                   Settings::DEFAULT_MEDIA_CAPTURE_CONTAINER);
+    connect(m_ui.captureContainer, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &GraphicsSettingsWidget::onMediaCaptureContainerChanged);
+  }
+
+  onMediaCaptureContainerChanged();
+}
+
+void GraphicsSettingsWidget::onMediaCaptureContainerChanged()
+{
+  SettingsInterface* const sif = m_dialog->getSettingsInterface();
+  const MediaCaptureBackend backend =
+    MediaCapture::ParseBackendName(
+      m_dialog
+        ->getEffectiveStringValue("MediaCapture", "Backend",
+                                  MediaCapture::GetBackendName(Settings::DEFAULT_MEDIA_CAPTURE_BACKEND))
+        .c_str())
+      .value_or(Settings::DEFAULT_MEDIA_CAPTURE_BACKEND);
+  const std::string container = m_dialog->getEffectiveStringValue("MediaCapture", "Container", "mp4");
+
+  {
+    m_ui.videoCaptureCodec->disconnect();
+    m_ui.videoCaptureCodec->clear();
+    m_ui.videoCaptureCodec->addItem(tr("Default"), QVariant(QString()));
+
+    for (const auto& [name, display_name] : MediaCapture::GetVideoCodecList(backend, container.c_str()))
+    {
+      const QString qname = QString::fromStdString(name);
+      m_ui.videoCaptureCodec->addItem(tr("%1 (%2)").arg(QString::fromStdString(display_name)).arg(qname), qname);
+    }
+
+    SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.videoCaptureCodec, "MediaCapture", "VideoCodec");
+  }
+
+  {
+    m_ui.audioCaptureCodec->disconnect();
+    m_ui.audioCaptureCodec->clear();
+    m_ui.audioCaptureCodec->addItem(tr("Default"), QVariant(QString()));
+
+    for (const auto& [name, display_name] : MediaCapture::GetAudioCodecList(backend, container.c_str()))
+    {
+      const QString qname = QString::fromStdString(name);
+      m_ui.audioCaptureCodec->addItem(tr("%1 (%2)").arg(QString::fromStdString(display_name)).arg(qname), qname);
+    }
+
+    SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.audioCaptureCodec, "MediaCapture", "AudioCodec");
+  }
+}
+
+void GraphicsSettingsWidget::onMediaCaptureVideoEnabledChanged()
+{
+  const bool enabled = m_dialog->getEffectiveBoolValue("MediaCapture", "VideoCapture", true);
+  m_ui.videoCaptureCodecLabel->setEnabled(enabled);
+  m_ui.videoCaptureCodec->setEnabled(enabled);
+  m_ui.videoCaptureBitrateLabel->setEnabled(enabled);
+  m_ui.videoCaptureBitrate->setEnabled(enabled);
+  m_ui.videoCaptureResolutionLabel->setEnabled(enabled);
+  m_ui.videoCaptureResolutionAuto->setEnabled(enabled);
+  m_ui.enableVideoCaptureArguments->setEnabled(enabled);
+  m_ui.videoCaptureArguments->setEnabled(enabled);
+  onMediaCaptureVideoAutoResolutionChanged();
+}
+
+void GraphicsSettingsWidget::onMediaCaptureVideoAutoResolutionChanged()
+{
+  const bool enabled = m_dialog->getEffectiveBoolValue("MediaCapture", "VideoCapture", true);
+  const bool auto_enabled = m_dialog->getEffectiveBoolValue("MediaCapture", "VideoAutoSize", false);
+  m_ui.videoCaptureWidth->setEnabled(enabled && !auto_enabled);
+  m_ui.xLabel->setEnabled(enabled && !auto_enabled);
+  m_ui.videoCaptureHeight->setEnabled(enabled && !auto_enabled);
+}
+
+void GraphicsSettingsWidget::onMediaCaptureAudioEnabledChanged()
+{
+  const bool enabled = m_dialog->getEffectiveBoolValue("MediaCapture", "AudioCapture", true);
+  m_ui.audioCaptureCodecLabel->setEnabled(enabled);
+  m_ui.audioCaptureCodec->setEnabled(enabled);
+  m_ui.audioCaptureBitrateLabel->setEnabled(enabled);
+  m_ui.audioCaptureBitrate->setEnabled(enabled);
+  m_ui.enableAudioCaptureArguments->setEnabled(enabled);
+  m_ui.audioCaptureArguments->setEnabled(enabled);
 }
 
 void GraphicsSettingsWidget::onEnableAnyTextureReplacementsChanged()

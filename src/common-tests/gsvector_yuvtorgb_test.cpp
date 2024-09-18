@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "common/bitutils.h"
 #include "common/gsvector.h"
@@ -15,8 +15,8 @@ static void YUVToRGB_Vector(const std::array<s16, 64>& Crblk, const std::array<s
   const GSVector4i addval = signed_output ? GSVector4i::cxpr(0) : GSVector4i::cxpr(0x80808080);
   for (u32 y = 0; y < 8; y++)
   {
-    const GSVector4i Cr = GSVector4i::loadl(&Crblk[(y / 2) * 8]).i16to32();
-    const GSVector4i Cb = GSVector4i::loadl(&Cbblk[(y / 2) * 8]).i16to32();
+    const GSVector4i Cr = GSVector4i::loadl(&Crblk[(y / 2) * 8]).s16to32();
+    const GSVector4i Cb = GSVector4i::loadl(&Cbblk[(y / 2) * 8]).s16to32();
     const GSVector4i Y = GSVector4i::load<true>(&Yblk[y * 8]);
 
     // BT.601 YUV->RGB coefficients, rounding formula from Mednafen.
@@ -73,9 +73,9 @@ static void YUVToRGB_Scalar(const std::array<s16, 64>& Crblk, const std::array<s
 
 TEST(GSVector, YUVToRGB)
 {
-  std::array<s16, 64> crblk;
-  std::array<s16, 64> cbblk;
-  std::array<s16, 64> yblk;
+  alignas(VECTOR_ALIGNMENT) std::array<s16, 64> crblk;
+  alignas(VECTOR_ALIGNMENT) std::array<s16, 64> cbblk;
+  alignas(VECTOR_ALIGNMENT) std::array<s16, 64> yblk;
   for (s16 i = -128; i < 128; i++)
   {
     for (u32 j = 0; j < 64; j++)
@@ -91,10 +91,10 @@ TEST(GSVector, YUVToRGB)
         for (u32 j = 0; j < 64; j++)
           yblk[j] = l;
 
-        u32 rows[64];
+        alignas(VECTOR_ALIGNMENT) u32 rows[64];
         YUVToRGB_Scalar(crblk, cbblk, yblk, rows, false);
 
-        u32 rowv[64];
+        alignas(VECTOR_ALIGNMENT) u32 rowv[64];
         YUVToRGB_Vector(crblk, cbblk, yblk, rowv, false);
         ASSERT_EQ(std::memcmp(rows, rowv, sizeof(rows)), 0);
 
@@ -108,13 +108,13 @@ TEST(GSVector, YUVToRGB)
 
 #if 0
 // Performance test
-u32 g_gsvector_yuvtorgb_temp[64];
+alignas(VECTOR_ALIGNMENT) u32 g_gsvector_yuvtorgb_temp[64];
 
 TEST(GSVector, YUVToRGB_Scalar)
 {
-  std::array<s16, 64> crblk;
-  std::array<s16, 64> cbblk;
-  std::array<s16, 64> yblk;
+  alignas(VECTOR_ALIGNMENT) std::array<s16, 64> crblk;
+  alignas(VECTOR_ALIGNMENT) std::array<s16, 64> cbblk;
+  alignas(VECTOR_ALIGNMENT) std::array<s16, 64> yblk;
   for (s16 i = -128; i < 128; i++)
   {
     for (u32 j = 0; j < 64; j++)
@@ -138,9 +138,9 @@ TEST(GSVector, YUVToRGB_Scalar)
 
 TEST(GSVector, YUVToRGB_Vector)
 {
-  std::array<s16, 64> crblk;
-  std::array<s16, 64> cbblk;
-  std::array<s16, 64> yblk;
+  alignas(VECTOR_ALIGNMENT) std::array<s16, 64> crblk;
+  alignas(VECTOR_ALIGNMENT) std::array<s16, 64> cbblk;
+  alignas(VECTOR_ALIGNMENT) std::array<s16, 64> yblk;
   for (s16 i = -128; i < 128; i++)
   {
     for (u32 j = 0; j < 64; j++)

@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "vulkan_pipeline.h"
 #include "vulkan_builders.h"
 #include "vulkan_device.h"
 
+#include "common/align.h"
 #include "common/assert.h"
 #include "common/error.h"
+#include "common/heap_array.h"
 #include "common/log.h"
 
 Log_SetChannel(VulkanDevice);
@@ -30,6 +32,15 @@ std::unique_ptr<GPUShader> VulkanDevice::CreateShaderFromBinary(GPUShaderStage s
 {
   VkShaderModule mod;
 
+  // In the very rare event that the pointer isn't word-aligned...
+  DynamicHeapArray<u32> data_copy;
+  if (Common::IsAlignedPow2(reinterpret_cast<uintptr_t>(data.data()), 4)) [[unlikely]]
+  {
+    data_copy.resize((data.size() + (sizeof(u32) - 1)) / sizeof(u32));
+    std::memcpy(data_copy.data(), data.data(), data.size());
+    data = std::span<const u8>(reinterpret_cast<const u8*>(data_copy.data()), data.size());
+  }
+
   const VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0, data.size(),
                                        reinterpret_cast<const u32*>(data.data())};
   VkResult res = vkCreateShaderModule(m_device, &ci, nullptr, &mod);
@@ -49,6 +60,19 @@ std::unique_ptr<GPUShader> VulkanDevice::CreateShaderFromSource(GPUShaderStage s
 {
   if (language == GPUShaderLanguage::SPV)
   {
+    // Optimize the SPIR-V if we're not using a debug device.
+    std::optional<DynamicHeapArray<u8>> optimized_spv;
+    if (!m_debug_device)
+    {
+      Error optimize_error;
+      optimized_spv = GPUDevice::OptimizeVulkanSpv(
+        std::span<const u8>(reinterpret_cast<const u8*>(source.data()), source.size()), &optimize_error);
+      if (!optimized_spv.has_value())
+        WARNING_LOG("Failed to optimize SPIR-V: {}", optimize_error.GetDescription());
+      else
+        source = std::string_view(reinterpret_cast<const char*>(optimized_spv->data()), optimized_spv->size());
+    }
+
     if (out_binary)
       out_binary->assign(reinterpret_cast<const u8*>(source.data()), source.length());
 

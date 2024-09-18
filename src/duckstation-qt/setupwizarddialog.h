@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>.
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -68,6 +68,7 @@ private:
   void setupBIOSPage();
   void setupGameListPage();
   void setupControllerPage(bool initial);
+  void updateStylesheets();
 
   void pageChangedTo(int page);
   void updatePageLabels(int prev_page);

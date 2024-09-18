@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "gpu_device.h"
+#include "compress_helpers.h"
 #include "core/host.h"     // TODO: Remove, needed for getting fullscreen mode.
 #include "core/settings.h" // TODO: Remove, needed for dump directory.
 #include "gpu_framebuffer_manager.h"
@@ -14,6 +15,7 @@
 #include "common/log.h"
 #include "common/path.h"
 #include "common/scoped_guard.h"
+#include "common/sha1_digest.h"
 #include "common/string_util.h"
 #include "common/timer.h"
 
@@ -43,6 +45,8 @@ Log_SetChannel(GPUDevice);
 std::unique_ptr<GPUDevice> g_gpu_device;
 
 static std::string s_pipeline_cache_path;
+static size_t s_pipeline_cache_size;
+static std::array<u8, SHA1Digest::DIGEST_SIZE> s_pipeline_cache_hash;
 size_t GPUDevice::s_total_vram_usage = 0;
 GPUDevice::Statistics GPUDevice::s_stats = {};
 
@@ -343,7 +347,7 @@ GPUDevice::AdapterInfoList GPUDevice::GetAdapterListForAPI(RenderAPI api)
 }
 
 bool GPUDevice::Create(std::string_view adapter, std::string_view shader_cache_path, u32 shader_cache_version,
-                       bool debug_device, GPUVSyncMode vsync, bool allow_present_throttle, bool threaded_presentation,
+                       bool debug_device, GPUVSyncMode vsync, bool allow_present_throttle,
                        std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features, Error* error)
 {
   m_vsync_mode = vsync;
@@ -356,13 +360,14 @@ bool GPUDevice::Create(std::string_view adapter, std::string_view shader_cache_p
     return false;
   }
 
-  if (!CreateDevice(adapter, threaded_presentation, exclusive_fullscreen_control, disabled_features, error))
+  if (!CreateDevice(adapter, exclusive_fullscreen_control, disabled_features, error))
   {
     if (error && !error->IsValid())
       error->SetStringView("Failed to create device.");
     return false;
   }
 
+  INFO_LOG("Render API: {} Version {}", RenderAPIToString(m_render_api), m_render_api_version);
   INFO_LOG("Graphics Driver Info:\n{}", GetDriverInfo());
 
   OpenShaderCache(shader_cache_path, shader_cache_version);
@@ -397,7 +402,7 @@ void GPUDevice::OpenShaderCache(std::string_view base_path, u32 version)
   {
     const std::string basename = GetShaderCacheBaseName("shaders");
     const std::string filename = Path::Combine(base_path, basename);
-    if (!m_shader_cache.Open(filename.c_str(), version))
+    if (!m_shader_cache.Open(filename.c_str(), m_render_api_version, version))
     {
       WARNING_LOG("Failed to open shader cache. Creating new cache.");
       if (!m_shader_cache.Create())
@@ -419,18 +424,33 @@ void GPUDevice::OpenShaderCache(std::string_view base_path, u32 version)
   else
   {
     // Still need to set the version - GL needs it.
-    m_shader_cache.Open(std::string_view(), version);
+    m_shader_cache.Open(std::string_view(), m_render_api_version, version);
   }
 
   s_pipeline_cache_path = {};
+  s_pipeline_cache_size = 0;
+  s_pipeline_cache_hash = {};
+
   if (m_features.pipeline_cache && !base_path.empty())
   {
-    const std::string basename = GetShaderCacheBaseName("pipelines");
-    std::string filename = Path::Combine(base_path, TinyString::from_format("{}.bin", basename));
-    if (ReadPipelineCache(filename))
-      s_pipeline_cache_path = std::move(filename);
-    else
-      WARNING_LOG("Failed to read pipeline cache.");
+    Error error;
+    s_pipeline_cache_path =
+      Path::Combine(base_path, TinyString::from_format("{}.bin", GetShaderCacheBaseName("pipelines")));
+    if (FileSystem::FileExists(s_pipeline_cache_path.c_str()))
+    {
+      if (OpenPipelineCache(s_pipeline_cache_path, &error))
+        return;
+
+      WARNING_LOG("Failed to read pipeline cache '{}': {}", Path::GetFileName(s_pipeline_cache_path),
+                  error.GetDescription());
+    }
+
+    if (!CreatePipelineCache(s_pipeline_cache_path, &error))
+    {
+      WARNING_LOG("Failed to create pipeline cache '{}': {}", Path::GetFileName(s_pipeline_cache_path),
+                  error.GetDescription());
+      s_pipeline_cache_path = {};
+    }
   }
 }
 
@@ -440,21 +460,11 @@ void GPUDevice::CloseShaderCache()
 
   if (!s_pipeline_cache_path.empty())
   {
-    DynamicHeapArray<u8> data;
-    if (GetPipelineCacheData(&data))
+    Error error;
+    if (!ClosePipelineCache(s_pipeline_cache_path, &error))
     {
-      // Save disk writes if it hasn't changed, think of the poor SSDs.
-      FILESYSTEM_STAT_DATA sd;
-      if (!FileSystem::StatFile(s_pipeline_cache_path.c_str(), &sd) || sd.Size != static_cast<s64>(data.size()))
-      {
-        INFO_LOG("Writing {} bytes to '{}'", data.size(), Path::GetFileName(s_pipeline_cache_path));
-        if (!FileSystem::WriteBinaryFile(s_pipeline_cache_path.c_str(), data.data(), data.size()))
-          ERROR_LOG("Failed to write pipeline cache to '{}'", Path::GetFileName(s_pipeline_cache_path));
-      }
-      else
-      {
-        INFO_LOG("Skipping updating pipeline cache '{}' due to no changes.", Path::GetFileName(s_pipeline_cache_path));
-      }
+      WARNING_LOG("Failed to close pipeline cache '{}': {}", Path::GetFileName(s_pipeline_cache_path),
+                  error.GetDescription());
     }
 
     s_pipeline_cache_path = {};
@@ -465,52 +475,62 @@ std::string GPUDevice::GetShaderCacheBaseName(std::string_view type) const
 {
   const std::string_view debug_suffix = m_debug_device ? "_debug" : "";
 
-  std::string ret;
-  switch (GetRenderAPI())
-  {
-#ifdef _WIN32
-    case RenderAPI::D3D11:
-      ret = fmt::format(
-        "d3d11_{}_{}{}", type,
-        D3DCommon::GetFeatureLevelShaderModelString(D3D11Device::GetInstance().GetD3DDevice()->GetFeatureLevel()),
-        debug_suffix);
-      break;
-    case RenderAPI::D3D12:
-      ret = fmt::format("d3d12_{}{}", type, debug_suffix);
-      break;
-#endif
-#ifdef ENABLE_VULKAN
-    case RenderAPI::Vulkan:
-      ret = fmt::format("vulkan_{}{}", type, debug_suffix);
-      break;
-#endif
-#ifdef ENABLE_OPENGL
-    case RenderAPI::OpenGL:
-      ret = fmt::format("opengl_{}{}", type, debug_suffix);
-      break;
-    case RenderAPI::OpenGLES:
-      ret = fmt::format("opengles_{}{}", type, debug_suffix);
-      break;
-#endif
-#ifdef __APPLE__
-    case RenderAPI::Metal:
-      ret = fmt::format("metal_{}{}", type, debug_suffix);
-      break;
-#endif
-    default:
-      UnreachableCode();
-      break;
-  }
+  TinyString lower_api_name(RenderAPIToString(m_render_api));
+  lower_api_name.convert_to_lower_case();
 
-  return ret;
+  return fmt::format("{}_{}{}", lower_api_name, type, debug_suffix);
 }
 
-bool GPUDevice::ReadPipelineCache(const std::string& filename)
+bool GPUDevice::OpenPipelineCache(const std::string& path, Error* error)
+{
+  CompressHelpers::OptionalByteBuffer data =
+    CompressHelpers::DecompressFile(CompressHelpers::CompressType::Zstandard, path.c_str(), std::nullopt, error);
+  if (!data.has_value())
+    return false;
+
+  const size_t cache_size = data->size();
+  const std::array<u8, SHA1Digest::DIGEST_SIZE> cache_hash = SHA1Digest::GetDigest(data->cspan());
+
+  INFO_LOG("Loading {} byte pipeline cache with hash {}", s_pipeline_cache_size,
+           SHA1Digest::DigestToString(s_pipeline_cache_hash));
+
+  if (!ReadPipelineCache(std::move(data.value()), error))
+    return false;
+
+  s_pipeline_cache_size = cache_size;
+  s_pipeline_cache_hash = cache_hash;
+  return true;
+}
+
+bool GPUDevice::CreatePipelineCache(const std::string& path, Error* error)
 {
   return false;
 }
 
-bool GPUDevice::GetPipelineCacheData(DynamicHeapArray<u8>* data)
+bool GPUDevice::ClosePipelineCache(const std::string& path, Error* error)
+{
+  DynamicHeapArray<u8> data;
+  if (!GetPipelineCacheData(&data, error))
+    return false;
+
+  // Save disk writes if it hasn't changed, think of the poor SSDs.
+  if (s_pipeline_cache_size == data.size() && s_pipeline_cache_hash == SHA1Digest::GetDigest(data.cspan()))
+  {
+    INFO_LOG("Skipping updating pipeline cache '{}' due to no changes.", Path::GetFileName(path));
+    return true;
+  }
+
+  INFO_LOG("Compressing and writing {} bytes to '{}'", data.size(), Path::GetFileName(path));
+  return CompressHelpers::CompressToFile(CompressHelpers::CompressType::Zstandard, path.c_str(), data.cspan(), -1, true,
+                                         error);
+}
+
+bool GPUDevice::ReadPipelineCache(DynamicHeapArray<u8> data, Error* error)
+{
+  return false;
+}
+
+bool GPUDevice::GetPipelineCacheData(DynamicHeapArray<u8>* data, Error* error)
 {
   return false;
 }
@@ -744,25 +764,27 @@ std::unique_ptr<GPUShader> GPUDevice::CreateShader(GPUShaderStage stage, GPUShad
   }
 
   const GPUShaderCache::CacheIndexKey key = m_shader_cache.GetCacheKey(stage, language, source, entry_point);
-  DynamicHeapArray<u8> binary;
-  if (m_shader_cache.Lookup(key, &binary))
+  std::optional<GPUShaderCache::ShaderBinary> binary = m_shader_cache.Lookup(key);
+  if (binary.has_value())
   {
-    shader = CreateShaderFromBinary(stage, binary, error);
+    shader = CreateShaderFromBinary(stage, binary->cspan(), error);
     if (shader)
       return shader;
 
     ERROR_LOG("Failed to create shader from binary (driver changed?). Clearing cache.");
     m_shader_cache.Clear();
+    binary.reset();
   }
 
-  shader = CreateShaderFromSource(stage, language, source, entry_point, &binary, error);
+  GPUShaderCache::ShaderBinary new_binary;
+  shader = CreateShaderFromSource(stage, language, source, entry_point, &new_binary, error);
   if (!shader)
     return shader;
 
   // Don't insert empty shaders into the cache...
-  if (!binary.empty())
+  if (!new_binary.empty())
   {
-    if (!m_shader_cache.Insert(key, binary.data(), static_cast<u32>(binary.size())))
+    if (!m_shader_cache.Insert(key, new_binary.data(), static_cast<u32>(new_binary.size())))
       m_shader_cache.Close();
   }
 
@@ -1188,6 +1210,13 @@ std::unique_ptr<GPUDevice> GPUDevice::CreateDeviceForAPI(RenderAPI api)
   }
 }
 
+#ifndef _WIN32
+// Use a duckstation-suffixed shaderc name to avoid conflicts and loading another shaderc, e.g. from the Vulkan SDK.
+#define SHADERC_LIB_NAME "shaderc_ds"
+#else
+#define SHADERC_LIB_NAME "shaderc_shared"
+#endif
+
 #define SHADERC_FUNCTIONS(X)                                                                                           \
   X(shaderc_compiler_initialize)                                                                                       \
   X(shaderc_compiler_release)                                                                                          \
@@ -1204,7 +1233,8 @@ std::unique_ptr<GPUDevice> GPUDevice::CreateDeviceForAPI(RenderAPI api)
   X(shaderc_result_get_num_warnings)                                                                                   \
   X(shaderc_result_get_bytes)                                                                                          \
   X(shaderc_result_get_compilation_status)                                                                             \
-  X(shaderc_result_get_error_message)
+  X(shaderc_result_get_error_message)                                                                                  \
+  X(shaderc_optimize_spv)
 
 #define SPIRV_CROSS_FUNCTIONS(X)                                                                                       \
   X(spvc_context_create)                                                                                               \
@@ -1262,7 +1292,7 @@ bool dyn_libs::OpenShaderc(Error* error)
   if (s_shaderc_library.IsOpen())
     return true;
 
-  const std::string libname = DynamicLibrary::GetVersionedFilename("shaderc_shared");
+  const std::string libname = DynamicLibrary::GetVersionedFilename(SHADERC_LIB_NAME);
   if (!s_shaderc_library.Open(libname.c_str(), error))
   {
     Error::AddPrefix(error, "Failed to load shaderc: ");
@@ -1321,8 +1351,7 @@ bool dyn_libs::OpenSpirvCross(Error* error)
   // SPVC's build on Windows doesn't spit out a versioned DLL.
   const std::string libname = DynamicLibrary::GetVersionedFilename("spirv-cross-c-shared");
 #else
-  const std::string libname = DynamicLibrary::GetVersionedFilename("spirv-cross-c-shared", SPVC_C_API_VERSION_MAJOR,
-                                                                   SPVC_C_API_VERSION_MINOR, SPVC_C_API_VERSION_PATCH);
+  const std::string libname = DynamicLibrary::GetVersionedFilename("spirv-cross-c-shared", SPVC_C_API_VERSION_MAJOR);
 #endif
   if (!s_spirv_cross_library.Open(libname.c_str(), error))
   {
@@ -1373,6 +1402,63 @@ void dyn_libs::CloseAll()
 #undef SPIRV_CROSS_MSL_FUNCTIONS
 #undef SPIRV_CROSS_FUNCTIONS
 #undef SHADERC_FUNCTIONS
+
+std::optional<DynamicHeapArray<u8>> GPUDevice::OptimizeVulkanSpv(const std::span<const u8> spirv, Error* error)
+{
+  std::optional<DynamicHeapArray<u8>> ret;
+
+  if (spirv.size() < sizeof(u32) * 2)
+  {
+    Error::SetStringView(error, "Invalid SPIR-V input size.");
+    return ret;
+  }
+
+  // Need to set environment based on version.
+  u32 magic_word, spirv_version;
+  shaderc_target_env target_env = shaderc_target_env_vulkan;
+  shaderc_env_version target_version = shaderc_env_version_vulkan_1_0;
+  std::memcpy(&magic_word, spirv.data(), sizeof(magic_word));
+  std::memcpy(&spirv_version, spirv.data() + sizeof(magic_word), sizeof(spirv_version));
+  if (magic_word != 0x07230203u)
+  {
+    Error::SetStringView(error, "Invalid SPIR-V magic word.");
+    return ret;
+  }
+  if (spirv_version < 0x10300)
+    target_version = shaderc_env_version_vulkan_1_0;
+  else
+    target_version = shaderc_env_version_vulkan_1_1;
+
+  if (!dyn_libs::OpenShaderc(error))
+    return ret;
+
+  const shaderc_compile_options_t options = dyn_libs::shaderc_compile_options_initialize();
+  AssertMsg(options, "shaderc_compile_options_initialize() failed");
+  dyn_libs::shaderc_compile_options_set_target_env(options, target_env, target_version);
+  dyn_libs::shaderc_compile_options_set_optimization_level(options, shaderc_optimization_level_performance);
+
+  const shaderc_compilation_result_t result =
+    dyn_libs::shaderc_optimize_spv(dyn_libs::s_shaderc_compiler, spirv.data(), spirv.size(), options);
+  const shaderc_compilation_status status =
+    result ? dyn_libs::shaderc_result_get_compilation_status(result) : shaderc_compilation_status_internal_error;
+  if (status != shaderc_compilation_status_success)
+  {
+    const std::string_view errors(result ? dyn_libs::shaderc_result_get_error_message(result) : "null result object");
+    Error::SetStringFmt(error, "Failed to optimize SPIR-V: {}\n{}",
+                        dyn_libs::shaderc_compilation_status_to_string(status), errors);
+  }
+  else
+  {
+    const size_t spirv_size = dyn_libs::shaderc_result_get_length(result);
+    DebugAssert(spirv_size > 0);
+    ret = DynamicHeapArray<u8>(spirv_size);
+    std::memcpy(ret->data(), dyn_libs::shaderc_result_get_bytes(result), spirv_size);
+  }
+
+  dyn_libs::shaderc_result_release(result);
+  dyn_libs::shaderc_compile_options_release(options);
+  return ret;
+}
 
 bool GPUDevice::CompileGLSLShaderToVulkanSpv(GPUShaderStage stage, GPUShaderLanguage source_language,
                                              std::string_view source, const char* entry_point, bool optimization,
@@ -1509,6 +1595,8 @@ bool GPUDevice::TranslateVulkanSpvToLanguage(const std::span<const u8> spirv, GP
   }
 
   [[maybe_unused]] const SpvExecutionModel execmodel = dyn_libs::spvc_compiler_get_execution_model(scompiler);
+  [[maybe_unused]] static constexpr u32 UBO_DESCRIPTOR_SET = 0;
+  [[maybe_unused]] static constexpr u32 TEXTURE_DESCRIPTOR_SET = 1;
 
   switch (target_language)
   {
@@ -1533,11 +1621,19 @@ bool GPUDevice::TranslateVulkanSpvToLanguage(const std::span<const u8> spirv, GP
         return {};
       }
 
-      u32 start_set = 0;
+      if ((sres = dyn_libs::spvc_compiler_options_set_bool(soptions, SPVC_COMPILER_OPTION_HLSL_POINT_SIZE_COMPAT,
+                                                           true)) != SPVC_SUCCESS)
+      {
+        Error::SetStringFmt(error,
+                            "spvc_compiler_options_set_bool(SPVC_COMPILER_OPTION_HLSL_POINT_SIZE_COMPAT) failed: {}",
+                            static_cast<int>(sres));
+        return {};
+      }
+
       if (ubos_count > 0)
       {
         const spvc_hlsl_resource_binding rb = {.stage = execmodel,
-                                               .desc_set = start_set++,
+                                               .desc_set = UBO_DESCRIPTOR_SET,
                                                .binding = 0,
                                                .cbv = {.register_space = 0, .register_binding = 0}};
         if ((sres = dyn_libs::spvc_compiler_hlsl_add_resource_binding(scompiler, &rb)) != SPVC_SUCCESS)
@@ -1549,10 +1645,10 @@ bool GPUDevice::TranslateVulkanSpvToLanguage(const std::span<const u8> spirv, GP
 
       if (textures_count > 0)
       {
-        for (u32 i = 0; i < MAX_TEXTURE_SAMPLERS; i++)
+        for (u32 i = 0; i < textures_count; i++)
         {
           const spvc_hlsl_resource_binding rb = {.stage = execmodel,
-                                                 .desc_set = start_set++,
+                                                 .desc_set = TEXTURE_DESCRIPTOR_SET,
                                                  .binding = i,
                                                  .srv = {.register_space = 0, .register_binding = i},
                                                  .sampler = {.register_space = 0, .register_binding = i}};
@@ -1624,7 +1720,7 @@ bool GPUDevice::TranslateVulkanSpvToLanguage(const std::span<const u8> spirv, GP
 
       if (m_features.framebuffer_fetch &&
           ((sres = dyn_libs::spvc_compiler_options_set_uint(soptions, SPVC_COMPILER_OPTION_MSL_VERSION,
-                                                            SPVC_MAKE_MSL_VERSION(2, 3, 0))) != SPVC_SUCCESS))
+                                                            target_version)) != SPVC_SUCCESS))
       {
         Error::SetStringFmt(error, "spvc_compiler_options_set_uint(SPVC_COMPILER_OPTION_MSL_VERSION) failed: {}",
                             static_cast<int>(sres));
@@ -1699,18 +1795,68 @@ std::unique_ptr<GPUShader> GPUDevice::TranspileAndCreateShaderFromSource(
   GPUShaderStage stage, GPUShaderLanguage source_language, std::string_view source, const char* entry_point,
   GPUShaderLanguage target_language, u32 target_version, DynamicHeapArray<u8>* out_binary, Error* error)
 {
+  // Currently, entry points must be "main". TODO: rename the entry point in the SPIR-V.
+  if (std::strcmp(entry_point, "main") != 0)
+  {
+    Error::SetStringView(error, "Entry point must be main.");
+    return {};
+  }
+
   // Disable optimization when targeting OpenGL GLSL, otherwise, the name-based linking will fail.
   const bool optimization =
-    (target_language != GPUShaderLanguage::GLSL && target_language != GPUShaderLanguage::GLSLES);
-  DynamicHeapArray<u8> spv;
-  if (!CompileGLSLShaderToVulkanSpv(stage, source_language, source, entry_point, optimization, false, &spv, error))
+    (!m_debug_device && target_language != GPUShaderLanguage::GLSL && target_language != GPUShaderLanguage::GLSLES);
+
+  std::span<const u8> spv;
+  DynamicHeapArray<u8> intermediate_spv;
+  if (source_language == GPUShaderLanguage::GLSLVK)
+  {
+    if (!CompileGLSLShaderToVulkanSpv(stage, source_language, source, entry_point, optimization, false,
+                                      &intermediate_spv, error))
+    {
+      return {};
+    }
+
+    spv = intermediate_spv.cspan();
+  }
+  else if (source_language == GPUShaderLanguage::SPV)
+  {
+    spv = std::span<const u8>(reinterpret_cast<const u8*>(source.data()), source.size());
+
+    if (optimization)
+    {
+      Error optimize_error;
+      std::optional<DynamicHeapArray<u8>> optimized_spv = GPUDevice::OptimizeVulkanSpv(spv, &optimize_error);
+      if (!optimized_spv.has_value())
+      {
+        WARNING_LOG("Failed to optimize SPIR-V: {}", optimize_error.GetDescription());
+      }
+      else
+      {
+        DEV_LOG("SPIR-V optimized from {} bytes to {} bytes", source.length(), optimized_spv->size());
+        intermediate_spv = std::move(optimized_spv.value());
+        spv = intermediate_spv.cspan();
+      }
+    }
+  }
+  else
+  {
+    Error::SetStringFmt(error, "Unsupported source language for transpile: {}",
+                        ShaderLanguageToString(source_language));
     return {};
+  }
 
   std::string dest_source;
-  if (!TranslateVulkanSpvToLanguage(spv.cspan(), stage, target_language, target_version, &dest_source, error))
+  if (!TranslateVulkanSpvToLanguage(spv, stage, target_language, target_version, &dest_source, error))
     return {};
 
-  // TODO: MSL needs entry point suffixed.
+#ifdef __APPLE__
+  // MSL converter suffixes 0.
+  if (target_language == GPUShaderLanguage::MSL)
+  {
+    return CreateShaderFromSource(stage, target_language, dest_source,
+                                  TinyString::from_format("{}0", entry_point).c_str(), out_binary, error);
+  }
+#endif
 
   return CreateShaderFromSource(stage, target_language, dest_source, entry_point, out_binary, error);
 }

@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com> and contributors.
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "digital_controller.h"
 #include "host.h"
@@ -182,14 +182,14 @@ static const SettingInfo s_settings[] = {
 const Controller::ControllerInfo DigitalController::INFO = {ControllerType::DigitalController,
                                                             "DigitalController",
                                                             TRANSLATE_NOOP("ControllerType", "Digital Controller"),
-                                                            ICON_PF_GAMEPAD,
+                                                            ICON_PF_GAMEPAD_ALT,
                                                             s_binding_info,
                                                             s_settings,
                                                             Controller::VibrationCapabilities::NoVibration};
 
-void DigitalController::LoadSettings(SettingsInterface& si, const char* section)
+void DigitalController::LoadSettings(SettingsInterface& si, const char* section, bool initial)
 {
-  Controller::LoadSettings(si, section);
+  Controller::LoadSettings(si, section, initial);
   m_popn_controller_mode = si.GetBoolValue(section, "ForcePopnControllerMode", false);
 }
 

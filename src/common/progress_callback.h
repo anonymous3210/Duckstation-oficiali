@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
 #include "small_string.h"
 #include "types.h"
 
-#include "fmt/core.h"
+#include "fmt/base.h"
 
+#include <memory>
 #include <string>
 
 class ProgressCallback

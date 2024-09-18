@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
@@ -39,8 +39,6 @@ public:
   static void BindUpdateTextureUnit();
   static bool ShouldUsePBOsForDownloads();
   static void SetErrorObject(Error* errptr, std::string_view prefix, GLenum glerr);
-
-  RenderAPI GetRenderAPI() const override;
 
   bool HasSurface() const override;
   void DestroySurface() override;
@@ -104,8 +102,8 @@ public:
 
   void SetVSyncMode(GPUVSyncMode mode, bool allow_present_throttle) override;
 
-  bool BeginPresent(bool skip_present) override;
-  void EndPresent(bool explicit_present) override;
+  PresentResult BeginPresent(u32 clear_color) override;
+  void EndPresent(bool explicit_present, u64 present_time) override;
   void SubmitPresent() override;
 
   bool SetGPUTimingEnabled(bool enabled) override;
@@ -115,12 +113,14 @@ public:
   void CommitRTClearInFB(OpenGLTexture* tex, u32 idx);
   void CommitDSClearInFB(OpenGLTexture* tex);
 
-  GLuint LookupProgramCache(const OpenGLPipeline::ProgramCacheKey& key, const GPUPipeline::GraphicsConfig& plconfig, Error* error);
+  GLuint LookupProgramCache(const OpenGLPipeline::ProgramCacheKey& key, const GPUPipeline::GraphicsConfig& plconfig,
+                            Error* error);
   GLuint CompileProgram(const GPUPipeline::GraphicsConfig& plconfig, Error* error);
   void PostLinkProgram(const GPUPipeline::GraphicsConfig& plconfig, GLuint program_id);
   void UnrefProgram(const OpenGLPipeline::ProgramCacheKey& key);
 
-  OpenGLPipeline::VertexArrayCache::const_iterator LookupVAOCache(const OpenGLPipeline::VertexArrayCacheKey& key, Error* error);
+  OpenGLPipeline::VertexArrayCache::const_iterator LookupVAOCache(const OpenGLPipeline::VertexArrayCacheKey& key,
+                                                                  Error* error);
   GLuint CreateVAO(std::span<const GPUPipeline::VertexAttribute> attributes, u32 stride, Error* error);
   void UnrefVAO(const OpenGLPipeline::VertexArrayCacheKey& key);
 
@@ -132,13 +132,13 @@ public:
   void UnbindPipeline(const OpenGLPipeline* pl);
 
 protected:
-  bool CreateDevice(std::string_view adapter, bool threaded_presentation,
-                    std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features,
-                    Error* error) override;
+  bool CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
+                    FeatureMask disabled_features, Error* error) override;
   void DestroyDevice() override;
 
-  bool ReadPipelineCache(const std::string& filename) override;
-  bool GetPipelineCacheData(DynamicHeapArray<u8>* data) override;
+  bool OpenPipelineCache(const std::string& path, Error* error) override;
+  bool CreatePipelineCache(const std::string& path, Error* error) override;
+  bool ClosePipelineCache(const std::string& path, Error* error) override;
 
 private:
   static constexpr u8 NUM_TIMESTAMP_QUERIES = 3;
@@ -173,7 +173,6 @@ private:
                                         const GPUPipeline::GraphicsConfig& plconfig);
   void AddToPipelineCache(OpenGLPipeline::ProgramCacheItem* it);
   bool DiscardPipelineCache();
-  void ClosePipelineCache();
 
   void ApplyRasterizationState(GPUPipeline::RasterizationState rs);
   void ApplyDepthState(GPUPipeline::DepthState ds);
@@ -225,7 +224,6 @@ private:
   bool m_timestamp_query_started = false;
 
   std::FILE* m_pipeline_disk_cache_file = nullptr;
-  std::string m_pipeline_disk_cache_filename;
   u32 m_pipeline_disk_cache_data_end = 0;
   bool m_pipeline_disk_cache_changed = false;
 
